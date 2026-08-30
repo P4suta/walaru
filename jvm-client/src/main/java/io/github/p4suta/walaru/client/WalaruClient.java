@@ -231,9 +231,11 @@ public final class WalaruClient {
         Future<BoundedBytes> stderr =
                 readers.submit(() -> readBoundedLine(process.getErrorStream(), MAX_STDERR_BYTES));
         long deadline = System.nanoTime() + timeout.toNanos();
+        boolean terminatedByClient = false;
         try {
             boolean completed = process.waitFor(timeout.toNanos(), TimeUnit.NANOSECONDS);
             if (!completed) {
+                terminatedByClient = true;
                 boolean terminated = terminate(process);
                 String cleanup = terminated ? "" : "; its process tree did not terminate within the cleanup bound";
                 throw new WalaruClientException("Walaru exceeded timeout " + timeout + cleanup);
@@ -267,11 +269,12 @@ public final class WalaruClient {
             }
             return new WalaruResult<>(WalaruExit.fromCode(exitCode), exitCode, envelope);
         } catch (InterruptedException interrupted) {
+            terminatedByClient = true;
             terminate(process);
             Thread.currentThread().interrupt();
             throw new WalaruClientException("interrupted while waiting for Walaru", interrupted);
         } finally {
-            closeReaders(process, stdout, stderr, readers);
+            closeReaders(stdout, stderr, readers, terminatedByClient);
         }
     }
 
@@ -292,18 +295,20 @@ public final class WalaruClient {
     }
 
     private static BoundedBytes readBoundedLine(InputStream input, int maximum) throws IOException {
-        ByteArrayOutputStream kept = new ByteArrayOutputStream(Math.min(maximum, 8 * 1024));
-        byte[] chunk = new byte[8 * 1024];
-        long total = 0;
-        int read;
-        while ((read = input.read(chunk)) != -1) {
-            for (int index = 0; index < read; index += 1) {
-                if (chunk[index] == '\n') return new BoundedBytes(kept.toByteArray(), total > maximum);
-                if (total < maximum) kept.write(chunk[index]);
-                total += 1;
+        try (input) {
+            ByteArrayOutputStream kept = new ByteArrayOutputStream(Math.min(maximum, 8 * 1024));
+            byte[] chunk = new byte[8 * 1024];
+            long total = 0;
+            int read;
+            while ((read = input.read(chunk)) != -1) {
+                for (int index = 0; index < read; index += 1) {
+                    if (chunk[index] == '\n') return new BoundedBytes(kept.toByteArray(), total > maximum);
+                    if (total < maximum) kept.write(chunk[index]);
+                    total += 1;
+                }
             }
+            return new BoundedBytes(kept.toByteArray(), total > maximum);
         }
-        return new BoundedBytes(kept.toByteArray(), total > maximum);
     }
 
     private static boolean terminate(Process process) {
@@ -352,16 +357,15 @@ public final class WalaruClient {
     }
 
     private static void closeReaders(
-            Process process,
             Future<BoundedBytes> stdout,
             Future<BoundedBytes> stderr,
-            ExecutorService readers) {
-        closeQuietly(process.getInputStream());
-        closeQuietly(process.getErrorStream());
-        closeQuietly(process.getOutputStream());
+            ExecutorService readers,
+            boolean awaitTermination) {
         stdout.cancel(true);
         stderr.cancel(true);
         readers.shutdownNow();
+
+        if (!awaitTermination) return;
 
         boolean interrupted = Thread.interrupted();
         try {
@@ -373,14 +377,6 @@ public final class WalaruClient {
             readers.shutdownNow();
         } finally {
             if (interrupted) Thread.currentThread().interrupt();
-        }
-    }
-
-    private static void closeQuietly(AutoCloseable resource) {
-        try {
-            resource.close();
-        } catch (Exception ignored) {
-            // The process may already have closed its end of the pipe.
         }
     }
 
