@@ -2,6 +2,7 @@ package io.github.p4suta.walaru.gradle
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import io.github.p4suta.walaru.model.GradleProjectModel
+import org.gradle.testkit.runner.BuildResult
 import org.gradle.testkit.runner.GradleRunner
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
@@ -62,7 +63,7 @@ class MultiModuleFunctionalTest {
         val modelDirectory = projectDirectory.resolve("models")
         val allEvents = projectDirectory.resolve("all-events.jsonl")
 
-        runGradle(
+        val initialBuild = runGradle(
             initScript,
             adapterClasspath,
             agent,
@@ -70,6 +71,8 @@ class MultiModuleFunctionalTest {
             allEvents,
             emptyList(),
         )
+        assertEquals(null, initialBuild.task(":alpha:walaruTestReport"))
+        assertEquals(null, initialBuild.task(":beta:walaruTestReport"))
 
         val mapper = ObjectMapper()
         val all = allEvents.readLines().map(mapper::readTree)
@@ -103,7 +106,7 @@ class MultiModuleFunctionalTest {
         modelDirectory: Path,
         events: Path,
         extra: List<String>,
-    ) {
+    ): BuildResult =
         GradleRunner.create()
             .withProjectDir(projectDirectory.toFile())
             .withPluginClasspath()
@@ -124,7 +127,6 @@ class MultiModuleFunctionalTest {
                 ) + extra,
             )
             .build()
-    }
 
     private fun fixture(relative: String, contents: String) {
         val path = projectDirectory.resolve(relative)

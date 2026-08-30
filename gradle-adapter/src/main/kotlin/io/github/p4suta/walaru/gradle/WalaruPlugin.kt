@@ -120,6 +120,7 @@ class WalaruPlugin : Plugin<Project> {
             task.projectDirectory.set(project.layout.projectDirectory.asFile.absolutePath)
         }
 
+        val externallyManagedEventFile = project.providers.systemProperty("walaru.eventFile").isPresent
         testTask.configure { task ->
             val arguments = project.objects.newInstance(WalaruAgentArguments::class.java)
             arguments.agentJar.set(extension.agentJar)
@@ -141,12 +142,12 @@ class WalaruPlugin : Plugin<Project> {
             } else {
                 selected.forEach(task.filter::includeTestsMatching)
             }
-            if (!project.providers.systemProperty("walaru.eventFile").isPresent) {
+            if (!externallyManagedEventFile) {
                 task.doFirst {
                     Files.deleteIfExists(File(extension.eventFile.get()).toPath())
                 }
+                task.finalizedBy(report)
             }
-            task.finalizedBy(report)
         }
         report.configure { it.mustRunAfter(testTask) }
 
