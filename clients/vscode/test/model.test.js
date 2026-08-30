@@ -3,6 +3,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 const {
+  applyLiveStatuses,
   commandArguments,
   executionAllowed,
   formatEnvelope,
@@ -62,6 +63,30 @@ test("builds independent multi-root models with failures first", () => {
   assert.deepEqual(Array.from(models.keys()), [beta.folder.uri.toString()]);
 });
 
+test("applies live terminal statuses before the persistence refresh completes", () => {
+  const current = workspaceModel(
+    folder("alpha", "/work/alpha"),
+    envelope({ running: true }),
+    envelope({
+      tests: [
+        { id: "demo.Test#works", module: ":", lastStatus: "failed", lastFailureId: "failure-1" },
+        { id: "demo.Other#works", module: ":", lastStatus: "passed", lastFailureId: null },
+      ],
+    }),
+  );
+
+  const updated = applyLiveStatuses(
+    current,
+    { "demo.Test#works": "passed" },
+    "rev-live",
+  );
+
+  assert.equal(updated.revision, "rev-live");
+  assert.equal(updated.tests.find((item) => item.id === "demo.Test#works").status, "passed");
+  assert.equal(updated.tests.find((item) => item.id === "demo.Other#works").status, "passed");
+  assert.equal(current.tests.find((item) => item.id === "demo.Test#works").status, "failed");
+});
+
 test("aggregates status and represents workspace trust", () => {
   const current = workspaceModel(
     folder("alpha", "/work/alpha"),
@@ -78,6 +103,10 @@ test("aggregates status and represents workspace trust", () => {
   assert.equal(executionAllowed(false), false);
   assert.equal(executionAllowed(true), true);
   assert.match(statusSummary([], false).text, /untrusted/);
+  assert.match(statusSummary([current], true, [{ state: "running" }]).text, /checking/);
+  assert.match(statusSummary([current], true, [{ state: "paused" }]).text, /paused/);
+  assert.match(statusSummary([current], true, [{ state: "failed", failures: 2 }]).text, /2 failed/);
+  assert.match(statusSummary([], true, [{ state: "failed", failures: 0 }]).text, /1 failed/);
 });
 
 test("builds exact shell-free command argv", () => {

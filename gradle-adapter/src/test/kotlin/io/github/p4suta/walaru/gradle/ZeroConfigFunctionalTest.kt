@@ -82,6 +82,65 @@ class ZeroConfigFunctionalTest {
         assertTrue(projectDirectory.resolve("build.gradle.kts").readText().contains("plugins { java }"))
     }
 
+    @Test
+    fun `externally managed verification always emits fresh test evidence`() {
+        fixture("settings.gradle.kts", "rootProject.name = \"live-evidence-fixture\"")
+        fixture(
+            "build.gradle.kts",
+            """
+                plugins { java }
+                repositories { mavenCentral() }
+                dependencies {
+                    testImplementation(platform("org.junit:junit-bom:6.1.3"))
+                    testImplementation("org.junit.jupiter:junit-jupiter")
+                    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+                }
+                tasks.test { useJUnitPlatform() }
+            """.trimIndent(),
+        )
+        fixture("src/main/java/demo/Example.java", "package demo; public final class Example {}")
+        fixture(
+            "src/test/java/demo/ExampleTest.java",
+            "package demo; public final class ExampleTest { @org.junit.jupiter.api.Test void works() {} }",
+        )
+        val initScript = projectDirectory.resolve("walaru.init.gradle.kts")
+        Files.copy(checkNotNull(javaClass.getResourceAsStream("/walaru.init.gradle.kts")), initScript)
+        val events = projectDirectory.resolve("live/events.jsonl")
+        val model = projectDirectory.resolve("live/model")
+        val adapterClasspath = listOf(
+            WalaruPlugin::class.java.protectionDomain.codeSource.location.toURI().let(Path::of),
+            GradleProjectModel::class.java.protectionDomain.codeSource.location.toURI().let(Path::of),
+        ).joinToString(File.pathSeparator)
+        val arguments = listOf(
+            "walaruVerify",
+            "--init-script",
+            initScript.toString(),
+            "-Dwalaru.adapterClasspath=$adapterClasspath",
+            "-Dwalaru.agentJar=${checkNotNull(System.getProperty("walaru.functionalAgent"))}",
+            "-Dwalaru.workspaceRoot=${projectDirectory.toFile().canonicalPath}",
+            "-Dwalaru.eventFile=$events",
+            "-Dwalaru.modelDirectory=$model",
+            "--configuration-cache",
+        )
+
+        GradleRunner.create()
+            .withProjectDir(projectDirectory.toFile())
+            .withPluginClasspath()
+            .withArguments(arguments)
+            .build()
+        assertTrue(events.readText().contains("\"type\":\"TEST_FINISH\""))
+
+        events.writeText("")
+        val second = GradleRunner.create()
+            .withProjectDir(projectDirectory.toFile())
+            .withPluginClasspath()
+            .withArguments(arguments)
+            .build()
+
+        assertTrue(events.readText().contains("\"type\":\"TEST_FINISH\""), second.output)
+        assertTrue(!second.output.contains(":test UP-TO-DATE"), second.output)
+    }
+
     private fun fixture(relative: String, contents: String) {
         val path = projectDirectory.resolve(relative)
         path.parent.createDirectories()

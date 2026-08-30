@@ -36,7 +36,24 @@ function compareTests(left, right) {
   );
 }
 
-function statusSummary(models, trusted = true) {
+function applyLiveStatuses(current, testStatuses, revision) {
+  if (!current || !testStatuses || typeof testStatuses !== "object" || Array.isArray(testStatuses)) {
+    return current;
+  }
+  const tests = current.tests.map((test) => ({
+    ...test,
+    status: typeof testStatuses[test.id] === "string" ? testStatuses[test.id] : test.status,
+  }));
+  tests.sort(compareTests);
+  return {
+    ...current,
+    revision: revision || current.revision,
+    tests,
+    error: null,
+  };
+}
+
+function statusSummary(models, trusted = true, liveStates = []) {
   if (!trusted) {
     return {
       text: "$(lock) Walaru: workspace untrusted",
@@ -45,24 +62,63 @@ function statusSummary(models, trusted = true) {
     };
   }
   const list = Array.from(models || []);
+  const live = Array.from(liveStates || []);
   const tests = list.reduce((count, current) => count + current.tests.length, 0);
   const failures = list.reduce(
     (count, current) => count + current.tests.filter((test) => test.status === "failed").length,
     0,
   );
   const errors = list.filter((current) => current.error).length;
-  if (errors > 0) {
+  const liveErrors = live.filter((current) => current.state === "error").length;
+  const running = live.filter((current) => current.state === "running").length;
+  const queued = live.filter((current) => current.state === "queued").length;
+  const dirty = live.filter((current) => current.state === "dirty").length;
+  const paused = live.filter((current) => current.state === "paused").length;
+  const liveFailures = live.reduce(
+    (count, current) => count + (current.state === "failed" ? Math.max(1, current.failures || 0) : 0),
+    0,
+  );
+  if (running > 0) {
     return {
-      text: `$(error) Walaru: ${errors} workspace error${errors === 1 ? "" : "s"}`,
-      tooltip: "Open Walaru output for details",
-      failures,
+      text: `$(sync~spin) Walaru: checking ${running} workspace${running === 1 ? "" : "s"}`,
+      tooltip: "Unsaved buffers are being verified; newer edits replace this run",
+      failures: Math.max(failures, liveFailures),
     };
   }
-  const icon = failures > 0 ? "$(testing-failed-icon)" : "$(testing-passed-icon)";
+  if (queued > 0) {
+    return {
+      text: "$(watch) Walaru: edit queued",
+      tooltip: "Live verification will start after the debounce window",
+      failures: Math.max(failures, liveFailures),
+    };
+  }
+  if (dirty > 0) {
+    return {
+      text: "$(circle-outline) Walaru: save to verify",
+      tooltip: "The editor changed; on-save live verification is waiting for a save",
+      failures: Math.max(failures, liveFailures),
+    };
+  }
+  if (errors > 0 || liveErrors > 0) {
+    return {
+      text: `$(error) Walaru: ${errors + liveErrors} workspace error${errors + liveErrors === 1 ? "" : "s"}`,
+      tooltip: "Open Walaru output for details",
+      failures: Math.max(failures, liveFailures),
+    };
+  }
+  if (paused > 0 && paused === live.length) {
+    return {
+      text: "$(debug-pause) Walaru: live paused",
+      tooltip: "Run Walaru: Resume Live Verification to continue",
+      failures: Math.max(failures, liveFailures),
+    };
+  }
+  const currentFailures = Math.max(failures, liveFailures);
+  const icon = currentFailures > 0 ? "$(testing-failed-icon)" : "$(testing-passed-icon)";
   return {
-    text: `${icon} Walaru: ${failures} failed / ${tests}`,
+    text: `${icon} Walaru: ${currentFailures} failed / ${tests}`,
     tooltip: `${list.length} workspace${list.length === 1 ? "" : "s"}; ${tests} tests`,
-    failures,
+    failures: currentFailures,
   };
 }
 
@@ -227,6 +283,7 @@ function pad(value, width) {
 }
 
 module.exports = {
+  applyLiveStatuses,
   commandArguments,
   compareTests,
   executionAllowed,

@@ -6,6 +6,7 @@ use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use serde_json::json;
 use tempfile::tempdir;
 use walaru_core::protocol::{Envelope, RpcRequest};
 use walaru_core::workspace::WorkspaceLayout;
@@ -36,6 +37,42 @@ fn status_returns_the_fixed_envelope_and_worktree_paths() {
         )
     );
     assert_eq!(envelope.revision.len(), "rev-".len() + 64);
+}
+
+#[test]
+fn malformed_live_payloads_are_usage_errors_without_starting_a_worker() {
+    let directory = tempdir().unwrap();
+    fs::write(
+        directory.path().join("settings.gradle.kts"),
+        "rootProject.name=\"invalid-live\"",
+    )
+    .unwrap();
+    let daemon = Daemon::open(directory.path()).unwrap();
+
+    for command in [
+        json!({"full": "yes"}),
+        json!({"since": 7}),
+        json!({"full": true, "since": "HEAD"}),
+        json!({"supersede": "yes"}),
+        json!({"selectedTests": ["demo.Test#works", 7]}),
+        json!({"overlay": {"sessionId": "../vscode", "documents": []}}),
+    ] {
+        let response = daemon.handle(RpcRequest {
+            schema_version: 1,
+            request_id: "invalid-live".into(),
+            workspace_root: directory.path().to_string_lossy().into_owned(),
+            command: "verify".into(),
+            payload_json: serde_json::to_vec(&json!({"command": command})).unwrap(),
+        });
+        assert_eq!(
+            response.exit_code,
+            2,
+            "payload {command} returned {}",
+            String::from_utf8_lossy(&response.envelope_json)
+        );
+        let envelope: Envelope = serde_json::from_slice(&response.envelope_json).unwrap();
+        assert_eq!(envelope.status, walaru_core::protocol::Status::Error);
+    }
 }
 
 #[test]

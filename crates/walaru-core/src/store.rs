@@ -573,6 +573,23 @@ impl Store {
         Ok(())
     }
 
+    /// Atomically updates terminal statuses while preserving discovered test metadata.
+    pub fn update_test_statuses(
+        &self,
+        statuses: &BTreeMap<String, String>,
+    ) -> Result<(), StoreError> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
+        for (test_id, status) in statuses {
+            transaction.execute(
+                "UPDATE tests SET last_status = ?2 WHERE id = ?1",
+                params![test_id, status],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
     /// Lists tests in stable ID order.
     pub fn tests(
         &self,

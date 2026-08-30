@@ -15,6 +15,15 @@ The drop-in Gradle plugin, Gradle init script, or Maven Surefire launch injects 
 
 Successful runs persist a revision manifest. Known implementation edits use learned edges; unknown dependencies, public surface changes, resources, and build inputs widen conservatively. A changed worktree can never produce a fresh success for an earlier revision.
 
+Live clients send bounded complete text overlays instead of modifying files. The daemon hashes and
+synchronizes repository inputs into a per-editor mirror, applies the text snapshot, reuses warm build
+state, and binds results to both the mirrored content revision and editor document versions. One
+verification gate per worktree coalesces concurrent clients; a newer generation cooperatively
+terminates the older process tree before it can publish. Compiler output is converted into bounded
+source locations, and explicit safe runtime values become bounded source-linked hints in the same
+versioned response used by every editor. A preparation marker and atomic manifest update make an
+interrupted mirror self-healing on the next request.
+
 Replay is a fresh execution, not in-place heap undo. The JVM backend selects an earlier event and verifies the observable prefix. The optional Linux `rr` boundary can create an argv navigation plan, but navigation alone is not exact JVM state proof.
 
 The generated Gradle report and deterministic failure analyzer make the library useful without any

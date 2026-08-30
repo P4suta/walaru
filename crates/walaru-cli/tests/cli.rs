@@ -3,10 +3,12 @@
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use tempfile::tempdir;
+use walaru_core::workspace::WorkspaceLayout;
 
 const WALARU: &str = env!("CARGO_BIN_EXE_walaru");
 
@@ -16,8 +18,8 @@ fn help_exposes_the_frozen_command_surface() {
     assert!(output.status.success());
     let help = String::from_utf8(output.stdout).unwrap();
     for command in [
-        "status", "watch", "tui", "stop", "doctor", "verify", "explain", "tests", "failure",
-        "impact", "coverage", "trace", "values", "record", "replay", "reverse",
+        "status", "watch", "tui", "stop", "cancel", "doctor", "verify", "explain", "tests",
+        "failure", "impact", "coverage", "trace", "values", "record", "replay", "reverse",
     ] {
         assert!(help.contains(command), "missing `{command}` in:\n{help}");
     }
@@ -112,6 +114,26 @@ fn non_tty_status_autostarts_daemon_and_defaults_to_json() {
     assert_eq!(stop.status.code(), Some(0));
     let stopped: Value = serde_json::from_slice(&stop.stdout).unwrap();
     assert_eq!(stopped["data"]["stopping"], true);
+
+    let restarted = Command::new(WALARU)
+        .args([
+            "--workspace",
+            directory.path().to_str().unwrap(),
+            "--format",
+            "json",
+            "status",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        restarted.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&restarted.stderr)
+    );
+    let _ = Command::new(WALARU)
+        .args(["--workspace", directory.path().to_str().unwrap(), "stop"])
+        .output();
 }
 
 #[test]
@@ -317,6 +339,236 @@ printf '%s\n' \
 
     let stopped = run(&["stop"]);
     assert_eq!(stopped.status.code(), Some(0));
+}
+
+#[test]
+fn cancel_interrupts_an_active_worker_and_returns_a_structured_superseded_result() {
+    let directory = tempdir().unwrap();
+    fs::create_dir_all(directory.path().join("src/main/java/demo")).unwrap();
+    fs::write(
+        directory.path().join("src/main/java/demo/App.java"),
+        "package demo; final class App {}\n",
+    )
+    .unwrap();
+    fs::write(
+        directory.path().join("settings.gradle.kts"),
+        "rootProject.name=\"cancel\"",
+    )
+    .unwrap();
+    let wrapper = directory.path().join("gradlew");
+    fs::write(
+        &wrapper,
+        "#!/usr/bin/env bash\nset -eu\nmkdir -p .gradle\ntouch .gradle/worker-started\nsleep 30\n",
+    )
+    .unwrap();
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+    for artifact in ["adapter.jar", "agent.jar", "init.gradle.kts"] {
+        fs::write(directory.path().join(artifact), "fixture").unwrap();
+    }
+    let configure = |process: &mut Command| {
+        process
+            .env("WALARU_ADAPTER_JAR", directory.path().join("adapter.jar"))
+            .env("WALARU_AGENT_JAR", directory.path().join("agent.jar"))
+            .env(
+                "WALARU_INIT_SCRIPT",
+                directory.path().join("init.gradle.kts"),
+            );
+    };
+    let mut verify = Command::new(WALARU);
+    verify
+        .args([
+            "--workspace",
+            directory.path().to_str().unwrap(),
+            "--format",
+            "json",
+            "verify",
+            "--supersede",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    configure(&mut verify);
+    let verify = verify.spawn().unwrap();
+    let marker = directory.path().join(".gradle/worker-started");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !marker.is_file() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(marker.is_file(), "verification worker did not start");
+
+    let started = Instant::now();
+    let mut cancel = Command::new(WALARU);
+    cancel.args([
+        "--workspace",
+        directory.path().to_str().unwrap(),
+        "--format",
+        "json",
+        "cancel",
+    ]);
+    configure(&mut cancel);
+    let cancelled = cancel.output().unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "cancel took {:?}",
+        started.elapsed()
+    );
+    assert_eq!(cancelled.status.code(), Some(0));
+    let envelope: Value = serde_json::from_slice(&cancelled.stdout).unwrap();
+    assert_eq!(envelope["data"]["cancelled"], true);
+
+    let verified = verify.wait_with_output().unwrap();
+    assert_eq!(
+        verified.status.code(),
+        Some(4),
+        "stderr: {}",
+        String::from_utf8_lossy(&verified.stderr)
+    );
+    let envelope: Value = serde_json::from_slice(&verified.stdout).unwrap();
+    assert_eq!(envelope["status"], "stale");
+    assert_eq!(envelope["data"]["cancelled"], true);
+
+    let _ = Command::new(WALARU)
+        .args(["--workspace", directory.path().to_str().unwrap(), "stop"])
+        .output();
+}
+
+#[test]
+fn verify_executes_unsaved_overlay_without_modifying_the_workspace() {
+    let directory = tempdir().unwrap();
+    let source = directory.path().join("src/main/java/demo/App.java");
+    fs::create_dir_all(source.parent().unwrap()).unwrap();
+    fs::write(
+        &source,
+        "package demo; final class App { int value = 1; }\n",
+    )
+    .unwrap();
+    fs::write(
+        directory.path().join("settings.gradle.kts"),
+        "rootProject.name=\"overlay\"",
+    )
+    .unwrap();
+    let wrapper = directory.path().join("gradlew");
+    fs::write(
+        &wrapper,
+        r#"#!/usr/bin/env bash
+set -eu
+event_file=""
+for argument in "$@"; do
+  case "$argument" in -Dwalaru.eventFile=*) event_file="${argument#*=}" ;; esac
+done
+mkdir -p "$(dirname "$event_file")"
+cat src/main/java/demo/App.java > "$event_file.source"
+printf '%s\n' "$@" > "$event_file.args"
+printf '%s\n' \
+'{"schemaVersion":1,"sequence":0,"threadId":1,"type":"TEST_START","testName":"demo.AppTest#works","stateHash":"s0"}' \
+'{"schemaVersion":1,"sequence":1,"threadId":1,"type":"TEST_FINISH","testName":"demo.AppTest#works","status":"successful","stateHash":"s1"}' > "$event_file"
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+    for artifact in ["adapter.jar", "agent.jar", "init.gradle.kts"] {
+        fs::write(directory.path().join(artifact), "fixture").unwrap();
+    }
+    let manifest = directory.path().join("overlay.json");
+    fs::write(
+        &manifest,
+        serde_json::to_vec(&serde_json::json!({
+            "schemaVersion": 1,
+            "sessionId": "cli-test",
+            "documents": [{
+                "path": "src/main/java/demo/App.java",
+                "version": 42,
+                "content": "package demo; final class App { int value = 2; }\n"
+            }]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let mut verify = Command::new(WALARU);
+    verify.args([
+        "--workspace",
+        directory.path().to_str().unwrap(),
+        "--format",
+        "json",
+        "verify",
+        "--overlay-manifest",
+        manifest.to_str().unwrap(),
+        "--test",
+        "demo.AppTest#works",
+        "--supersede",
+    ]);
+    for (name, file) in [
+        ("WALARU_ADAPTER_JAR", "adapter.jar"),
+        ("WALARU_AGENT_JAR", "agent.jar"),
+        ("WALARU_INIT_SCRIPT", "init.gradle.kts"),
+    ] {
+        verify.env(name, directory.path().join(file));
+    }
+
+    let verified = verify.output().unwrap();
+
+    assert_eq!(
+        verified.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&verified.stderr)
+    );
+    let envelope: Value = serde_json::from_slice(&verified.stdout).unwrap();
+    assert_eq!(
+        envelope["data"]["overlayVersions"]["src/main/java/demo/App.java"],
+        42
+    );
+    assert_eq!(envelope["data"]["selection"], "explicit");
+    let worker_directory = WorkspaceLayout::new(directory.path())
+        .unwrap()
+        .state_dir
+        .join("live/cli-test/worker");
+    assert!(
+        fs::read_to_string(worker_directory.join("events.jsonl.source"))
+            .unwrap()
+            .contains("value = 2")
+    );
+    assert!(
+        fs::read_to_string(worker_directory.join("events.jsonl.args"))
+            .unwrap()
+            .contains("-Dwalaru.tests=demo.AppTest.works")
+    );
+    assert!(fs::read_to_string(&source).unwrap().contains("value = 1"));
+
+    let _ = Command::new(WALARU)
+        .args(["--workspace", directory.path().to_str().unwrap(), "stop"])
+        .output();
+}
+
+#[test]
+fn invalid_overlay_is_usage_error_and_does_not_start_a_daemon() {
+    let directory = tempdir().unwrap();
+    fs::write(
+        directory.path().join("settings.gradle.kts"),
+        "rootProject.name=\"invalid-overlay\"",
+    )
+    .unwrap();
+    let manifest = directory.path().join("overlay.json");
+    fs::write(
+        &manifest,
+        r#"{"schemaVersion":2,"sessionId":"vscode","documents":[]}"#,
+    )
+    .unwrap();
+    let layout = WorkspaceLayout::new(directory.path()).unwrap();
+
+    let result = Command::new(WALARU)
+        .args([
+            "--workspace",
+            directory.path().to_str().unwrap(),
+            "verify",
+            "--overlay-manifest",
+            manifest.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(result.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&result.stderr).contains("invalid overlay manifest"));
+    assert!(!layout.state_dir.exists());
 }
 
 #[test]

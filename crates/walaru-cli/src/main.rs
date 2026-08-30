@@ -1,6 +1,6 @@
 //! `walaru` command-line client.
 
-use std::fs::{File, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Stdio};
@@ -11,7 +11,9 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde_json::{Value, json};
 use walaru_core::protocol::{Envelope, RpcRequest};
 use walaru_core::workspace::WorkspaceLayout;
-use walaru_daemon::{DaemonServer, daemon_is_running, send_request};
+use walaru_daemon::{
+    DaemonServer, MAX_OVERLAY_BYTES, OverlayManifest, daemon_is_running, send_request,
+};
 
 mod human;
 mod tui;
@@ -66,6 +68,8 @@ enum PublicCommand {
     Tui(TuiArgs),
     /// Stop the worktree daemon.
     Stop,
+    /// Cancel the active verification worker, if any.
+    Cancel,
     /// Diagnose JDK, Gradle, agent, and replay capabilities.
     Doctor,
     /// Compile and run conservatively selected tests.
@@ -128,6 +132,15 @@ struct VerifyArgs {
     /// Select changes since this VCS revision.
     #[arg(long, conflicts_with = "full")]
     since: Option<String>,
+    /// Run only an exact public test ID; repeat to select multiple tests.
+    #[arg(long = "test", value_name = "TEST_ID")]
+    selected_tests: Vec<String>,
+    /// Read a bounded v1 unsaved-document overlay manifest.
+    #[arg(long, value_name = "PATH")]
+    overlay_manifest: Option<PathBuf>,
+    /// Cancel and replace an older verification for this worktree.
+    #[arg(long)]
+    supersede: bool,
 }
 
 #[derive(Debug, Args)]
@@ -222,6 +235,19 @@ fn run_client(cli: &Cli) -> Result<i32, Box<dyn std::error::Error>> {
         eprintln!("error: interactive TUI requires a TTY; use `walaru tui --once` for automation");
         return Ok(2);
     }
+    let overlay = if let PublicCommand::Verify(arguments) = &cli.command
+        && let Some(path) = &arguments.overlay_manifest
+    {
+        match read_overlay_manifest(path) {
+            Ok(overlay) => Some(overlay),
+            Err(error) => {
+                eprintln!("error: invalid overlay manifest: {error}");
+                return Ok(2);
+            }
+        }
+    } else {
+        None
+    };
     ensure_daemon(&layout)?;
     if let PublicCommand::Watch(arguments) = &cli.command {
         return watch(cli, &layout, arguments);
@@ -230,12 +256,29 @@ fn run_client(cli: &Cli) -> Result<i32, Box<dyn std::error::Error>> {
         return tui::run(cli, &layout, arguments);
     }
 
-    let (command, command_payload) = command_payload(&cli.command);
+    let (command, mut command_payload) = command_payload(&cli.command);
+    if let Some(overlay) = overlay {
+        command_payload["overlay"] = serde_json::to_value(overlay)?;
+    }
     let request = request(cli, &layout, command, &command_payload);
     let response = send_request(&layout.socket, &request)?;
     let envelope: Envelope = serde_json::from_slice(&response.envelope_json)?;
     render(&envelope, effective_format(cli.format, false), command)?;
+    if command == "stop" && response.exit_code == 0 {
+        wait_for_daemon_shutdown(&layout)?;
+    }
     Ok(response.exit_code)
+}
+
+fn wait_for_daemon_shutdown(layout: &WorkspaceLayout) -> Result<(), Box<dyn std::error::Error>> {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        if !layout.socket.exists() && !layout.daemon_metadata.exists() {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    Err("daemon acknowledged stop but did not remove its endpoint within 3 seconds".into())
 }
 
 fn watch(
@@ -259,10 +302,16 @@ fn command_payload(command: &PublicCommand) -> (&'static str, Value) {
     match command {
         PublicCommand::Status => ("status", json!({})),
         PublicCommand::Stop => ("stop", json!({})),
+        PublicCommand::Cancel => ("cancel", json!({})),
         PublicCommand::Doctor => ("doctor", json!({})),
         PublicCommand::Verify(arguments) => (
             "verify",
-            json!({"full": arguments.full, "since": arguments.since}),
+            json!({
+                "full": arguments.full,
+                "since": arguments.since,
+                "selectedTests": arguments.selected_tests,
+                "supersede": arguments.supersede,
+            }),
         ),
         PublicCommand::Explain(arguments) => (
             "explain",
@@ -304,6 +353,23 @@ fn command_payload(command: &PublicCommand) -> (&'static str, Value) {
             unreachable!()
         }
     }
+}
+
+fn read_overlay_manifest(
+    path: &Path,
+) -> Result<walaru_daemon::OverlayRequest, Box<dyn std::error::Error>> {
+    const MANIFEST_OVERHEAD_BYTES: usize = 256 * 1024;
+    let maximum = MAX_OVERLAY_BYTES + MANIFEST_OVERHEAD_BYTES;
+    let metadata = fs::metadata(path)?;
+    if metadata.len() > maximum as u64 {
+        return Err(format!("overlay manifest exceeds {maximum} bytes").into());
+    }
+    let contents = fs::read(path)?;
+    if contents.len() > maximum {
+        return Err(format!("overlay manifest exceeds {maximum} bytes").into());
+    }
+    let manifest: OverlayManifest = serde_json::from_slice(&contents)?;
+    Ok(manifest.into_request()?)
 }
 
 fn request(

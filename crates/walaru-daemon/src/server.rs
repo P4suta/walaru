@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{self, Read, Write};
 #[cfg(unix)]
@@ -7,7 +7,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(windows)]
@@ -36,12 +37,14 @@ use walaru_core::replay::{
 use walaru_core::store::{ImpactSelection, RetentionPolicy, Store, StoreError};
 use walaru_core::workspace::{RevisionSnapshot, WorkspaceError, WorkspaceLayout};
 
+use crate::OverlayRequest;
 use crate::verifier::{
-    RecordingOptions, RuntimeArtifacts, VerificationMode, VerificationRequest, Verifier,
-    VerifierError,
+    CancellationToken, RecordingOptions, RuntimeArtifacts, VerificationMode, VerificationRequest,
+    Verifier, VerifierError,
 };
 
 const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
+const MAX_CONNECTION_WORKERS: usize = 32;
 const EXPLAIN_RECORDING_BUDGET: Duration = Duration::from_mins(2);
 
 /// Daemon startup, transport, or state error.
@@ -80,6 +83,10 @@ pub struct Daemon {
     store: Store,
     session_id: String,
     should_stop: AtomicBool,
+    verification_gate: Mutex<()>,
+    active_verification: Mutex<Option<(u64, CancellationToken)>>,
+    verification_generation: AtomicU64,
+    next_verification_id: AtomicU64,
 }
 
 impl Daemon {
@@ -94,6 +101,10 @@ impl Daemon {
             store,
             session_id: session_id(),
             should_stop: AtomicBool::new(false),
+            verification_gate: Mutex::new(()),
+            active_verification: Mutex::new(None),
+            verification_generation: AtomicU64::new(0),
+            next_verification_id: AtomicU64::new(1),
         })
     }
 
@@ -213,10 +224,23 @@ impl Daemon {
                 ),
             )),
             "stop" => {
+                self.cancel_verification();
                 self.should_stop.store(true, Ordering::Release);
                 Ok((
                     0,
                     self.envelope(Status::Ok, None, json!({"stopping": true}), Vec::new()),
+                ))
+            }
+            "cancel" => {
+                let cancelled = self.cancel_verification();
+                Ok((
+                    0,
+                    self.envelope(
+                        Status::Ok,
+                        None,
+                        json!({"cancelled": cancelled}),
+                        Vec::new(),
+                    ),
                 ))
             }
             "doctor" => Ok(self.doctor()),
@@ -390,29 +414,164 @@ impl Daemon {
     }
 
     fn verify(&self, payload: &RequestPayload) -> Result<(i32, Envelope), DaemonError> {
-        let full = payload
-            .command
-            .get("full")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false);
-        let since = payload
-            .command
-            .get("since")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned);
-        let verifier = Verifier::new(&self.layout, &self.store, RuntimeArtifacts::discover()?);
+        let full = match payload.command.get("full") {
+            None | Some(serde_json::Value::Null) => false,
+            Some(serde_json::Value::Bool(value)) => *value,
+            Some(_) => {
+                return Ok(self.verification_usage("WALARU_VERIFY", "full must be a boolean"));
+            }
+        };
+        let since = match payload.command.get("since") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::String(value))
+                if value.len() <= 1_024 && !value.chars().any(char::is_control) =>
+            {
+                Some(value.clone())
+            }
+            Some(_) => {
+                return Ok(
+                    self.verification_usage("WALARU_VERIFY", "since must be a bounded string")
+                );
+            }
+        };
+        if full && since.is_some() {
+            return Ok(
+                self.verification_usage("WALARU_VERIFY", "full and since cannot be used together")
+            );
+        }
+        let mut selected_tests = match payload.command.get("selectedTests") {
+            None | Some(serde_json::Value::Null) => Vec::new(),
+            Some(serde_json::Value::Array(tests))
+                if tests.iter().all(serde_json::Value::is_string) =>
+            {
+                tests
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            }
+            Some(_) => {
+                return Ok(self.verification_usage(
+                    "WALARU_TEST_SELECTION",
+                    "selectedTests must be an array of strings",
+                ));
+            }
+        };
+        let mut unique_tests = BTreeSet::new();
+        selected_tests.retain(|test| unique_tests.insert(test.clone()));
+        let overlay = match payload.command.get("overlay") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(value) => match serde_json::from_value::<OverlayRequest>(value.clone()) {
+                Ok(overlay) => Some(overlay),
+                Err(error) => {
+                    return Ok(self.verification_usage(
+                        "WALARU_OVERLAY",
+                        &format!("invalid overlay payload: {error}"),
+                    ));
+                }
+            },
+        };
+        if selected_tests.len() > 256
+            || selected_tests.iter().any(|test| {
+                test.is_empty()
+                    || test.len() > 1_024
+                    || test.contains(',')
+                    || test.chars().any(char::is_control)
+            })
+        {
+            return Ok(self.verification_usage(
+                "WALARU_TEST_SELECTION",
+                "selectedTests must contain at most 256 bounded IDs without commas or control characters",
+            ));
+        }
+        if let Some(overlay) = &overlay
+            && let Err(error) = overlay.validate()
+        {
+            return Ok(self.verification_usage("WALARU_OVERLAY", &error.to_string()));
+        }
         let request = VerificationRequest {
             mode: VerificationMode::Fast,
-            selected_tests: Vec::new(),
+            selected_tests,
             full,
             since,
             capture_file_io: false,
+            overlay,
         };
-        let mut outcome = verifier.verify(&request)?;
+        let supersede = match payload.command.get("supersede") {
+            None | Some(serde_json::Value::Null) => false,
+            Some(serde_json::Value::Bool(value)) => *value,
+            Some(_) => {
+                return Ok(self.verification_usage("WALARU_VERIFY", "supersede must be a boolean"));
+            }
+        };
+        let generation = if supersede {
+            self.verification_generation.fetch_add(1, Ordering::AcqRel) + 1
+        } else {
+            self.verification_generation.load(Ordering::Acquire)
+        };
+        if supersede {
+            self.cancel_active_verification();
+        }
+        let _gate = self
+            .verification_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if generation != self.verification_generation.load(Ordering::Acquire) {
+            return Ok(self.superseded_verification());
+        }
+        let verification_id = self.next_verification_id.fetch_add(1, Ordering::Relaxed);
+        let cancellation = CancellationToken::default();
+        {
+            let mut active = self
+                .active_verification
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *active = Some((verification_id, cancellation.clone()));
+        }
+        if generation != self.verification_generation.load(Ordering::Acquire) {
+            cancellation.cancel();
+        }
+        let verification = RuntimeArtifacts::discover().and_then(|artifacts| {
+            Verifier::new(&self.layout, &self.store, artifacts)
+                .with_cancellation(cancellation.clone())
+                .verify(&request)
+        });
+        let mut outcome = match verification {
+            Ok(outcome) => outcome,
+            Err(VerifierError::Cancelled) => {
+                self.clear_active_verification(verification_id);
+                return Ok(self.superseded_verification());
+            }
+            Err(error) => {
+                self.clear_active_verification(verification_id);
+                return Err(error.into());
+            }
+        };
         let requeued = outcome.status == walaru_core::store::RunStatus::Stale;
         if requeued {
-            outcome = verifier.verify(&request)?;
+            let artifacts = RuntimeArtifacts::discover()?;
+            match Verifier::new(&self.layout, &self.store, artifacts)
+                .with_cancellation(cancellation.clone())
+                .verify(&request)
+            {
+                Ok(requeued_outcome) => outcome = requeued_outcome,
+                Err(VerifierError::Cancelled) => {
+                    self.clear_active_verification(verification_id);
+                    return Ok(self.superseded_verification());
+                }
+                Err(error) => {
+                    self.clear_active_verification(verification_id);
+                    return Err(error.into());
+                }
+            }
         }
+        if cancellation.is_cancelled()
+            || generation != self.verification_generation.load(Ordering::Acquire)
+        {
+            self.clear_active_verification(verification_id);
+            return Ok(self.superseded_verification());
+        }
+        self.clear_active_verification(verification_id);
         let status = match outcome.status {
             walaru_core::store::RunStatus::Passed => Status::Ok,
             walaru_core::store::RunStatus::Failed => Status::Failure,
@@ -434,6 +593,12 @@ impl Daemon {
                 "warning",
                 "workspace changed during verification; the result is not a success",
             ));
+        } else if outcome.status == walaru_core::store::RunStatus::Error {
+            diagnostics.push(diagnostic(
+                "WALARU_VERIFICATION_EVIDENCE",
+                "error",
+                "the worker completed without fresh passing evidence for the requested tests; inspect the worker log",
+            ));
         }
         let mut data = serde_json::to_value(&outcome)?;
         if let Some(data) = data.as_object_mut() {
@@ -443,6 +608,65 @@ impl Daemon {
         envelope.revision = outcome.revision;
         envelope.capabilities = outcome.capabilities;
         Ok((outcome.exit_code, envelope))
+    }
+
+    fn cancel_verification(&self) -> bool {
+        self.verification_generation.fetch_add(1, Ordering::AcqRel);
+        self.cancel_active_verification()
+    }
+
+    fn verification_usage(&self, code: &str, message: &str) -> (i32, Envelope) {
+        (
+            2,
+            self.envelope(
+                Status::Error,
+                None,
+                json!({}),
+                vec![diagnostic(code, "error", message)],
+            ),
+        )
+    }
+
+    fn cancel_active_verification(&self) -> bool {
+        let active = self
+            .active_verification
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((_, cancellation)) = active.as_ref() {
+            cancellation.cancel();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn clear_active_verification(&self, verification_id: u64) {
+        let mut active = self
+            .active_verification
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if active
+            .as_ref()
+            .is_some_and(|(id, _)| *id == verification_id)
+        {
+            *active = None;
+        }
+    }
+
+    fn superseded_verification(&self) -> (i32, Envelope) {
+        (
+            4,
+            self.envelope(
+                Status::Stale,
+                None,
+                json!({"cancelled": true, "reason": "superseded"}),
+                vec![diagnostic(
+                    "WALARU_SUPERSEDED",
+                    "info",
+                    "verification was cancelled because a newer request replaced it",
+                )],
+            ),
+        )
     }
 
     fn explain(&self, payload: &RequestPayload) -> Result<(i32, Envelope), DaemonError> {
@@ -1004,7 +1228,7 @@ impl DaemonServer {
             socket: layout.socket.clone(),
             metadata: layout.daemon_metadata.clone(),
         };
-        let daemon = Daemon::open(&layout.root)?;
+        let daemon = Arc::new(Daemon::open(&layout.root)?);
         fs::write(
             &layout.daemon_metadata,
             serde_json::to_vec(&json!({
@@ -1015,39 +1239,80 @@ impl DaemonServer {
             }))?,
         )?;
 
-        loop {
-            let (mut stream, _) = match listener.accept() {
+        listener.set_nonblocking(true)?;
+        let mut workers = Vec::new();
+        while !daemon.should_stop() {
+            let (stream, _) = match listener.accept() {
                 Ok(connection) => connection,
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    reap_workers(&mut workers);
+                    std::thread::sleep(Duration::from_millis(10));
+                    continue;
+                }
                 Err(error) => return Err(error.into()),
             };
-            set_stream_timeouts(
-                &stream,
-                Some(Duration::from_secs(30)),
-                Some(Duration::from_secs(30)),
-            )?;
-            let request = match read_message::<RpcRequest>(&mut stream) {
-                Ok(request) => request,
-                // Per-connection I/O failures and malformed/untrusted local clients cannot
-                // terminate the worktree daemon. In particular, readiness probes connect and
-                // close without sending a frame, which maps to different I/O kinds by OS.
-                Err(
-                    DaemonError::Io(_) | DaemonError::Protobuf(_) | DaemonError::FrameTooLarge(_),
-                ) => continue,
-                Err(error) => return Err(error),
-            };
-            let response = daemon.handle(request);
-            if write_message(&mut stream, &response).is_err() {
-                if daemon.should_stop() {
-                    break;
-                }
+            reap_workers(&mut workers);
+            if workers.len() >= MAX_CONNECTION_WORKERS {
+                // A local client can hold a connection open until its read timeout. Bound those
+                // threads so malformed clients cannot exhaust the daemon while editor traffic
+                // continues to use short-lived connections.
+                drop(stream);
                 continue;
             }
-            if daemon.should_stop() {
-                break;
+            configure_accepted_stream(&stream)?;
+            let daemon = Arc::clone(&daemon);
+            workers.push(std::thread::spawn(move || {
+                serve_connection(stream, &daemon);
+            }));
+            reap_workers(&mut workers);
+        }
+        daemon.cancel_verification();
+        let shutdown_deadline = Instant::now() + Duration::from_secs(2);
+        while !workers.is_empty() && Instant::now() < shutdown_deadline {
+            reap_workers(&mut workers);
+            if !workers.is_empty() {
+                std::thread::sleep(Duration::from_millis(10));
             }
         }
+        // Any remaining handle is an idle or uncooperative local connection. Dropping the handle
+        // detaches it so endpoint cleanup and process shutdown are never held for its read timeout.
         Ok(())
+    }
+}
+
+fn serve_connection(mut stream: LocalStream, daemon: &Daemon) {
+    if set_stream_timeouts(
+        &stream,
+        Some(Duration::from_secs(30)),
+        Some(Duration::from_secs(30)),
+    )
+    .is_err()
+    {
+        return;
+    }
+    let request = match read_message::<RpcRequest>(&mut stream) {
+        Ok(request) => request,
+        // Per-connection I/O failures and malformed/untrusted local clients cannot terminate the
+        // worktree daemon. Readiness probes intentionally connect and close without a frame.
+        Err(DaemonError::Io(_) | DaemonError::Protobuf(_) | DaemonError::FrameTooLarge(_)) => {
+            return;
+        }
+        Err(_) => return,
+    };
+    let response = daemon.handle(request);
+    let _ = write_message(&mut stream, &response);
+}
+
+fn reap_workers(workers: &mut Vec<std::thread::JoinHandle<()>>) {
+    let mut index = 0;
+    while index < workers.len() {
+        if workers[index].is_finished() {
+            let worker = workers.swap_remove(index);
+            let _ = worker.join();
+        } else {
+            index += 1;
+        }
     }
 }
 
@@ -1225,6 +1490,13 @@ fn set_stream_timeouts(
     tolerate_unsupported_local_timeout(stream.set_write_timeout(write))
 }
 
+fn configure_accepted_stream(stream: &LocalStream) -> io::Result<()> {
+    // Whether an accepted socket inherits O_NONBLOCK from its listener differs by platform.
+    // Connection workers use blocking framed reads with explicit timeouts, so make that contract
+    // portable instead of depending on accept(2) inheritance behavior.
+    stream.set_nonblocking(false)
+}
+
 fn tolerate_unsupported_local_timeout(result: io::Result<()>) -> io::Result<()> {
     match result {
         // Darwin can reject SO_RCVTIMEO/SO_SNDTIMEO for AF_UNIX sockets with EINVAL.
@@ -1391,6 +1663,24 @@ impl Drop for SocketGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn accepted_stream_is_reset_to_blocking_mode() {
+        let (mut server, mut client) = UnixStream::pair().unwrap();
+        server.set_nonblocking(true).unwrap();
+        configure_accepted_stream(&server).unwrap();
+
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            client.write_all(&[42]).unwrap();
+        });
+        let mut byte = [0];
+        server.read_exact(&mut byte).unwrap();
+        writer.join().unwrap();
+
+        assert_eq!(byte, [42]);
+    }
 
     #[test]
     fn recording_budget_reports_exact_remaining_time_and_expiry() {

@@ -33,6 +33,11 @@ Open `build/reports/walaru/index.html`. It contains the assertion difference, li
 source line, named values, and next steps; the secret is represented only as `<redacted>`. The
 Kotlin example is at [`examples/kotlin-library-first`](examples/kotlin-library-first).
 
+For editor feedback, build the local VSIX and open the Java example. Walaru verifies unsaved buffers
+in an isolated mirror, cancels obsolete runs while typing, and reports compiler/test failures,
+captured values, coverage, and current test state directly in VS Code. See the
+[`clients/vscode` guide](clients/vscode/README.md) and the [Java walkthrough](examples/java-library-first/README.md).
+
 To use the source plugin in another build, add the checkout once:
 
 ```kotlin
