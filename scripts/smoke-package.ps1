@@ -18,27 +18,58 @@ function Invoke-Walaru {
     $Process = [System.Diagnostics.Process]::new()
     $Process.StartInfo = $StartInfo
     [void]$Process.Start()
-    # Walaru's structured response is exactly one JSON line. Reading to EOF can
-    # wait forever on Windows if the background daemon retains an inherited
-    # pipe handle after the short-lived client exits.
-    $StandardOutput = $Process.StandardOutput.ReadLineAsync()
-    $StandardError = $Process.StandardError.ReadLineAsync()
-    if (-not $Process.WaitForExit($TimeoutSeconds * 1000)) {
-        $Process.Kill($true)
-        $Process.WaitForExit()
-        throw "walaru timed out after $TimeoutSeconds seconds: $($Arguments -join ' ')"
+    try {
+        # Walaru's structured response is exactly one JSON line. Reading to EOF can
+        # wait forever on Windows if the background daemon retains an inherited
+        # pipe handle after the short-lived client exits.
+        $StandardOutput = $Process.StandardOutput.ReadLineAsync()
+        $StandardError = $Process.StandardError.ReadLineAsync()
+        if (-not $Process.WaitForExit($TimeoutSeconds * 1000)) {
+            $Process.Kill($true)
+            $Process.WaitForExit()
+            throw "walaru timed out after $TimeoutSeconds seconds: $($Arguments -join ' ')"
+        }
+        if (-not $StandardOutput.Wait(5000)) {
+            throw "walaru exited without completing its structured output: $($Arguments -join ' ')"
+        }
+        $ErrorText = ""
+        if ($StandardError.Wait(250)) {
+            $ErrorText = $StandardError.GetAwaiter().GetResult()
+        }
+        [pscustomobject]@{
+            ExitCode = $Process.ExitCode
+            StandardOutput = $StandardOutput.GetAwaiter().GetResult()
+            StandardError = $ErrorText
+        }
+    } finally {
+        $Process.Dispose()
     }
-    if (-not $StandardOutput.Wait(5000)) {
-        throw "walaru exited without completing its structured output: $($Arguments -join ' ')"
+}
+
+function Wait-WalaruDaemonExit {
+    param([Parameter(Mandatory = $true)][string]$WorkspaceRoot)
+
+    $StateRoot = Join-Path $WorkspaceRoot ".gradle\walaru"
+    $Deadline = [DateTime]::UtcNow.AddSeconds(10)
+    while ([DateTime]::UtcNow -lt $Deadline) {
+        $Metadata = Get-ChildItem -Path $StateRoot -Filter daemon.json -Recurse -ErrorAction SilentlyContinue
+        if (-not $Metadata) { return }
+        Start-Sleep -Milliseconds 100
     }
-    $ErrorText = ""
-    if ($StandardError.Wait(250)) {
-        $ErrorText = $StandardError.GetAwaiter().GetResult()
-    }
-    [pscustomobject]@{
-        ExitCode = $Process.ExitCode
-        StandardOutput = $StandardOutput.GetAwaiter().GetResult()
-        StandardError = $ErrorText
+    throw "packaged daemon did not exit within 10 seconds"
+}
+
+function Remove-TemporaryDirectory {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    foreach ($Attempt in 1..20) {
+        try {
+            Remove-Item -Recurse -Force $Path -ErrorAction Stop
+            return
+        } catch {
+            if ($Attempt -eq 20) { throw }
+            Start-Sleep -Milliseconds 250
+        }
     }
 }
 
@@ -93,9 +124,10 @@ try {
         Write-Host $StopResult.StandardError
         throw "packaged daemon did not stop cleanly"
     }
+    Wait-WalaruDaemonExit -WorkspaceRoot $SmokeWorkspace
 } catch {
     if ($SmokeWorkspace) { Write-DaemonLogs -WorkspaceRoot $SmokeWorkspace }
     throw
 } finally {
-    if (Test-Path $TemporaryRoot) { Remove-Item -Recurse -Force $TemporaryRoot }
+    if (Test-Path $TemporaryRoot) { Remove-TemporaryDirectory -Path $TemporaryRoot }
 }
