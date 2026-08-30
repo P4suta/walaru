@@ -18,17 +18,27 @@ function Invoke-Walaru {
     $Process = [System.Diagnostics.Process]::new()
     $Process.StartInfo = $StartInfo
     [void]$Process.Start()
-    $StandardOutput = $Process.StandardOutput.ReadToEndAsync()
-    $StandardError = $Process.StandardError.ReadToEndAsync()
+    # Walaru's structured response is exactly one JSON line. Reading to EOF can
+    # wait forever on Windows if the background daemon retains an inherited
+    # pipe handle after the short-lived client exits.
+    $StandardOutput = $Process.StandardOutput.ReadLineAsync()
+    $StandardError = $Process.StandardError.ReadLineAsync()
     if (-not $Process.WaitForExit($TimeoutSeconds * 1000)) {
         $Process.Kill($true)
         $Process.WaitForExit()
         throw "walaru timed out after $TimeoutSeconds seconds: $($Arguments -join ' ')"
     }
+    if (-not $StandardOutput.Wait(5000)) {
+        throw "walaru exited without completing its structured output: $($Arguments -join ' ')"
+    }
+    $ErrorText = ""
+    if ($StandardError.Wait(250)) {
+        $ErrorText = $StandardError.GetAwaiter().GetResult()
+    }
     [pscustomobject]@{
         ExitCode = $Process.ExitCode
         StandardOutput = $StandardOutput.GetAwaiter().GetResult()
-        StandardError = $StandardError.GetAwaiter().GetResult()
+        StandardError = $ErrorText
     }
 }
 
