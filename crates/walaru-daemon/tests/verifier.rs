@@ -49,7 +49,7 @@ fn successful_gradle_run_ingests_tests_coverage_trace_and_values() {
     assert!(
         arguments.contains(&format!(
             "-Dwalaru.workspaceRoot={}",
-            fixture.path().display()
+            fixture.path().canonicalize().unwrap().display()
         )),
         "workspace root was not scoped in Gradle argv:\n{arguments}"
     );
