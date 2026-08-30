@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
@@ -70,14 +71,17 @@ class WalaruClientTest {
     }
 
     @Test
-    void response_size_and_process_time_are_hard_bounded() {
+    void response_size_and_process_time_are_hard_bounded() throws Exception {
         WalaruClient oversized = client("oversized").maxResponseBytes(4_096).build();
         WalaruClientException size = assertThrows(WalaruClientException.class, oversized::status);
         assertTrue(size.getMessage().contains("exceeded"));
 
-        WalaruClient slow = client("slow").timeout(Duration.ofMillis(50)).build();
+        Path timeoutWorkspace = Files.createDirectory(workspace.resolve("timeout-workspace"));
+        WalaruClient slow = client(timeoutWorkspace, "slow").timeout(Duration.ofMillis(50)).build();
         WalaruClientException timeout = assertThrows(WalaruClientException.class, slow::status);
         assertTrue(timeout.getMessage().contains("timeout"));
+        Files.delete(timeoutWorkspace);
+        assertFalse(Files.exists(timeoutWorkspace));
         assertThrows(
                 IllegalArgumentException.class,
                 () -> client("normal").timeout(Duration.ofDays(2)));
@@ -95,9 +99,13 @@ class WalaruClientTest {
     }
 
     private WalaruClient.Builder client(String mode) {
+        return client(workspace, mode);
+    }
+
+    private WalaruClient.Builder client(Path workingDirectory, String mode) {
         String executable = System.getProperty("os.name").toLowerCase().contains("win") ? "java.exe" : "java";
         Path java = Path.of(System.getProperty("java.home"), "bin", executable);
-        return WalaruClient.builder(workspace).launcher(List.of(
+        return WalaruClient.builder(workingDirectory).launcher(List.of(
                 java.toString(),
                 "-cp",
                 System.getProperty("java.class.path"),

@@ -31,6 +31,9 @@ import java.util.concurrent.TimeoutException;
  */
 public final class WalaruClient {
     private static final int MAX_STDERR_BYTES = 64 * 1024;
+    private static final Duration GRACEFUL_TERMINATION_TIMEOUT = Duration.ofMillis(250);
+    private static final Duration FORCEFUL_TERMINATION_TIMEOUT = Duration.ofSeconds(5);
+    private static final Duration READER_SHUTDOWN_TIMEOUT = Duration.ofSeconds(2);
 
     private final Path workspace;
     private final List<String> launcher;
@@ -231,8 +234,9 @@ public final class WalaruClient {
         try {
             boolean completed = process.waitFor(timeout.toNanos(), TimeUnit.NANOSECONDS);
             if (!completed) {
-                terminate(process);
-                throw new WalaruClientException("Walaru exceeded timeout " + timeout);
+                boolean terminated = terminate(process);
+                String cleanup = terminated ? "" : "; its process tree did not terminate within the cleanup bound";
+                throw new WalaruClientException("Walaru exceeded timeout " + timeout + cleanup);
             }
             BoundedBytes output = future(stdout, "stdout", deadline);
             int exitCode = process.exitValue();
@@ -263,13 +267,11 @@ public final class WalaruClient {
             }
             return new WalaruResult<>(WalaruExit.fromCode(exitCode), exitCode, envelope);
         } catch (InterruptedException interrupted) {
-            Thread.currentThread().interrupt();
             terminate(process);
+            Thread.currentThread().interrupt();
             throw new WalaruClientException("interrupted while waiting for Walaru", interrupted);
         } finally {
-            stdout.cancel(true);
-            stderr.cancel(true);
-            readers.shutdownNow();
+            closeReaders(process, stdout, stderr, readers);
         }
     }
 
@@ -304,35 +306,81 @@ public final class WalaruClient {
         return new BoundedBytes(kept.toByteArray(), total > maximum);
     }
 
-    private static void terminate(Process process) {
+    private static boolean terminate(Process process) {
         List<ProcessHandle> descendants = new ArrayList<>(process.descendants().toList());
         Collections.reverse(descendants);
-        descendants.forEach(ProcessHandle::destroy);
-        process.destroy();
+        descendants.stream().filter(ProcessHandle::isAlive).forEach(ProcessHandle::destroy);
+        if (process.isAlive()) process.destroy();
         try {
-            boolean exited = process.waitFor(250, TimeUnit.MILLISECONDS);
-            descendants.stream()
-                    .filter(ProcessHandle::isAlive)
-                    .forEach(ProcessHandle::destroyForcibly);
-            if (!exited) process.destroyForcibly();
+            if (awaitProcessTree(process, descendants, GRACEFUL_TERMINATION_TIMEOUT)) return true;
 
-            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1);
-            process.waitFor(1, TimeUnit.SECONDS);
-            for (ProcessHandle descendant : descendants) {
-                if (!descendant.isAlive()) continue;
-                long remaining = Math.max(1L, deadline - System.nanoTime());
-                try {
-                    descendant.onExit().get(remaining, TimeUnit.NANOSECONDS);
-                } catch (ExecutionException | TimeoutException ignored) {
-                    // The process has already received a forcible termination request.
-                }
-            }
-        } catch (InterruptedException interrupted) {
-            Thread.currentThread().interrupt();
             descendants.stream()
                     .filter(ProcessHandle::isAlive)
                     .forEach(ProcessHandle::destroyForcibly);
-            process.destroyForcibly();
+            if (process.isAlive()) process.destroyForcibly();
+            return awaitProcessTree(process, descendants, FORCEFUL_TERMINATION_TIMEOUT);
+        } catch (InterruptedException interrupted) {
+            descendants.stream()
+                    .filter(ProcessHandle::isAlive)
+                    .forEach(ProcessHandle::destroyForcibly);
+            if (process.isAlive()) process.destroyForcibly();
+            Thread.currentThread().interrupt();
+            return false;
+        }
+    }
+
+    private static boolean awaitProcessTree(
+            Process process, List<ProcessHandle> descendants, Duration timeout) throws InterruptedException {
+        long deadline = System.nanoTime() + timeout.toNanos();
+        if (process.isAlive()) {
+            long remaining = deadline - System.nanoTime();
+            if (remaining <= 0 || !process.waitFor(remaining, TimeUnit.NANOSECONDS)) return false;
+        }
+        for (ProcessHandle descendant : descendants) {
+            if (!descendant.isAlive()) continue;
+            long remaining = deadline - System.nanoTime();
+            if (remaining <= 0) return false;
+            try {
+                descendant.onExit().get(remaining, TimeUnit.NANOSECONDS);
+            } catch (ExecutionException failure) {
+                if (descendant.isAlive()) return false;
+            } catch (TimeoutException timeoutFailure) {
+                return false;
+            }
+        }
+        return !process.isAlive() && descendants.stream().noneMatch(ProcessHandle::isAlive);
+    }
+
+    private static void closeReaders(
+            Process process,
+            Future<BoundedBytes> stdout,
+            Future<BoundedBytes> stderr,
+            ExecutorService readers) {
+        closeQuietly(process.getInputStream());
+        closeQuietly(process.getErrorStream());
+        closeQuietly(process.getOutputStream());
+        stdout.cancel(true);
+        stderr.cancel(true);
+        readers.shutdownNow();
+
+        boolean interrupted = Thread.interrupted();
+        try {
+            if (!readers.awaitTermination(READER_SHUTDOWN_TIMEOUT.toNanos(), TimeUnit.NANOSECONDS)) {
+                readers.shutdownNow();
+            }
+        } catch (InterruptedException shutdownInterrupted) {
+            interrupted = true;
+            readers.shutdownNow();
+        } finally {
+            if (interrupted) Thread.currentThread().interrupt();
+        }
+    }
+
+    private static void closeQuietly(AutoCloseable resource) {
+        try {
+            resource.close();
+        } catch (Exception ignored) {
+            // The process may already have closed its end of the pipe.
         }
     }
 
