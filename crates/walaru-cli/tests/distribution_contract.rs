@@ -91,3 +91,51 @@ fn repository_documents_and_packages_the_supported_contract() {
     assert!(intellij.contains("$ProjectFileDir$"));
     assert!(intellij.contains("--format json"));
 }
+
+#[test]
+fn dependency_fixtures_follow_the_version_catalog() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .unwrap();
+    let catalog = fs::read_to_string(root.join("gradle/libs.versions.toml")).unwrap();
+    let testng = catalog_version(&catalog, "testng");
+    let coroutines = catalog_version(&catalog, "coroutines");
+
+    let testng_functional = fs::read_to_string(root.join(
+        "gradle-adapter/src/test/kotlin/io/github/p4suta/walaru/gradle/TestNgFunctionalTest.kt",
+    ))
+    .unwrap();
+    assert!(
+        testng_functional.contains(&format!("org.testng:testng:{testng}")),
+        "Gradle TestNG fixture does not use catalog version {testng}"
+    );
+    let testng_maven = fs::read_to_string(root.join("fixtures/maven-testng/pom.xml")).unwrap();
+    assert!(
+        testng_maven.contains(&format!("<version>{testng}</version>")),
+        "Maven TestNG fixture does not use catalog version {testng}"
+    );
+
+    for fixture in [
+        "gradle-adapter/src/test/kotlin/io/github/p4suta/walaru/gradle/MixedJvmFunctionalTest.kt",
+        "fixtures/mixed-gradle/build.gradle.kts",
+    ] {
+        let contents = fs::read_to_string(root.join(fixture)).unwrap();
+        assert!(
+            contents.contains(&format!("kotlinx-coroutines-core:{coroutines}")),
+            "{fixture} does not use catalog version {coroutines}"
+        );
+    }
+}
+
+fn catalog_version(catalog: &str, name: &str) -> String {
+    let prefix = format!("{name} = \"");
+    catalog
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix(&prefix)
+                .and_then(|value| value.strip_suffix('"'))
+        })
+        .unwrap_or_else(|| panic!("version catalog is missing {name}"))
+        .to_owned()
+}
