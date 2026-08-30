@@ -67,8 +67,16 @@ class ZeroConfigFunctionalTest {
         val model = ObjectMapper().readTree(modelFile.toFile())
         assertEquals(":", model.path("projectPath").asText())
         assertEquals("test", model.path("testTask").asText())
-        assertTrue(model.path("productionRoots").any { it.asText().contains("classes/java/main") })
-        assertTrue(model.path("testRoots").any { it.asText().contains("classes/java/test") })
+        assertTrue(
+            model.path("productionRoots").any {
+                Path.of(it.asText()).endsWith(Path.of("classes", "java", "main"))
+            },
+        )
+        assertTrue(
+            model.path("testRoots").any {
+                Path.of(it.asText()).endsWith(Path.of("classes", "java", "test"))
+            },
+        )
         assertTrue(model.path("testRuntimeClasspath").size() > 0)
         assertTrue(model.path("javaExecutable").asText().contains("java"))
         assertTrue(projectDirectory.resolve("build.gradle.kts").readText().contains("plugins { java }"))

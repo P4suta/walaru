@@ -363,7 +363,7 @@ final class InstrumentationTest {
     }
 
     @Test
-    void fastInstrumentationMedianOverheadStaysBelowThirtyPercent() throws Exception {
+    void fastInstrumentationTrimmedMeanOverheadStaysBelowThirtyPercent() throws Exception {
         byte[] originalBytes = fastWorkloadClass();
         Class<?> original = new BytesClassLoader().define("fixture.FastWorkload", originalBytes);
         Class<?> instrumented = new BytesClassLoader().define(
@@ -379,30 +379,41 @@ final class InstrumentationTest {
                 originalRun.invoke(null, 10_000);
                 instrumentedRun.invoke(null, 10_000);
             }
-            long[] baseline = new long[7];
-            long[] observed = new long[7];
+            long[] baseline = new long[9];
+            long[] observed = new long[9];
             Object expected = null;
             Object actual = null;
             for (int index = 0; index < baseline.length; index++) {
-                long started = System.nanoTime();
-                expected = originalRun.invoke(null, 30_000_000);
-                baseline[index] = System.nanoTime() - started;
-                started = System.nanoTime();
-                actual = instrumentedRun.invoke(null, 30_000_000);
-                observed[index] = System.nanoTime() - started;
+                if (index % 2 == 0) {
+                    long started = System.nanoTime();
+                    expected = originalRun.invoke(null, 30_000_000);
+                    baseline[index] = System.nanoTime() - started;
+                    started = System.nanoTime();
+                    actual = instrumentedRun.invoke(null, 30_000_000);
+                    observed[index] = System.nanoTime() - started;
+                } else {
+                    long started = System.nanoTime();
+                    actual = instrumentedRun.invoke(null, 30_000_000);
+                    observed[index] = System.nanoTime() - started;
+                    started = System.nanoTime();
+                    expected = originalRun.invoke(null, 30_000_000);
+                    baseline[index] = System.nanoTime() - started;
+                }
             }
             AgentBridge.testFinished("fixture.FastWorkloadTest#works", "passed", null);
             assertEquals(expected, actual);
             Arrays.sort(baseline);
             Arrays.sort(observed);
-            long baselineMedian = baseline[baseline.length / 2];
-            long observedMedian = observed[observed.length / 2];
+            long baselineTrimmedMean = Arrays.stream(baseline, 1, baseline.length - 1).sum()
+                    / (baseline.length - 2);
+            long observedTrimmedMean = Arrays.stream(observed, 1, observed.length - 1).sum()
+                    / (observed.length - 2);
             assertTrue(
-                    observedMedian * 10 <= baselineMedian * 13,
-                    "fast instrumentation overhead exceeded 30%: baseline="
-                            + baselineMedian
+                    observedTrimmedMean * 10 <= baselineTrimmedMean * 13,
+                    "fast instrumentation overhead exceeded 30% after trimming outliers: baseline="
+                            + baselineTrimmedMean
                             + "ns observed="
-                            + observedMedian
+                            + observedTrimmedMean
                             + "ns");
         } finally {
             AgentBridge.closeForTest();

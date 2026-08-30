@@ -1,5 +1,49 @@
 $ErrorActionPreference = "Stop"
 
+function Invoke-Walaru {
+    param(
+        [Parameter(Mandatory = $true)][string]$Binary,
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [int]$TimeoutSeconds = 60
+    )
+
+    $StartInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $StartInfo.FileName = $Binary
+    $StartInfo.UseShellExecute = $false
+    $StartInfo.RedirectStandardOutput = $true
+    $StartInfo.RedirectStandardError = $true
+    foreach ($Argument in $Arguments) {
+        [void]$StartInfo.ArgumentList.Add($Argument)
+    }
+    $Process = [System.Diagnostics.Process]::new()
+    $Process.StartInfo = $StartInfo
+    [void]$Process.Start()
+    $StandardOutput = $Process.StandardOutput.ReadToEndAsync()
+    $StandardError = $Process.StandardError.ReadToEndAsync()
+    if (-not $Process.WaitForExit($TimeoutSeconds * 1000)) {
+        $Process.Kill($true)
+        $Process.WaitForExit()
+        throw "walaru timed out after $TimeoutSeconds seconds: $($Arguments -join ' ')"
+    }
+    [pscustomobject]@{
+        ExitCode = $Process.ExitCode
+        StandardOutput = $StandardOutput.GetAwaiter().GetResult()
+        StandardError = $StandardError.GetAwaiter().GetResult()
+    }
+}
+
+function Write-DaemonLogs {
+    param([Parameter(Mandatory = $true)][string]$WorkspaceRoot)
+
+    $StateRoot = Join-Path $WorkspaceRoot ".gradle\walaru"
+    if (-not (Test-Path $StateRoot)) { return }
+    Get-ChildItem -Path $StateRoot -Filter daemon.log -Recurse -ErrorAction SilentlyContinue |
+        ForEach-Object {
+            Write-Host "daemon log: $($_.FullName)"
+            Get-Content $_.FullName -ErrorAction SilentlyContinue
+        }
+}
+
 $Archive = $args[0]
 if (-not $Archive) { throw "usage: smoke-package.ps1 ARCHIVE" }
 $Archive = (Resolve-Path $Archive).Path
@@ -16,12 +60,32 @@ try {
     $BundleName = [System.IO.Path]::GetFileNameWithoutExtension($Archive)
     $Binary = Join-Path $TemporaryRoot "$BundleName\bin\walaru.exe"
     if (-not (Test-Path $Binary)) { throw "package is missing bin\walaru.exe" }
-    $RepositoryRoot = Split-Path -Parent $PSScriptRoot
-    $Doctor = & $Binary --workspace $RepositoryRoot --format json doctor | ConvertFrom-Json
-    if ($LASTEXITCODE -ne 0 -or $Doctor.schemaVersion -ne "1" -or $Doctor.data.ready -ne $true) {
+    $SmokeWorkspace = Join-Path $TemporaryRoot "workspace"
+    New-Item -ItemType Directory -Force -Path $SmokeWorkspace | Out-Null
+    'rootProject.name = "walaru-package-smoke"' |
+        Set-Content -Encoding utf8 (Join-Path $SmokeWorkspace "settings.gradle.kts")
+    New-Item -ItemType File -Force -Path (Join-Path $SmokeWorkspace "gradlew.bat") | Out-Null
+    $DoctorResult = Invoke-Walaru -Binary $Binary -Arguments @(
+        "--workspace", $SmokeWorkspace, "--format", "json", "doctor"
+    ) -TimeoutSeconds 90
+    if ($DoctorResult.ExitCode -ne 0) {
+        Write-Host $DoctorResult.StandardError
         throw "packaged doctor smoke test failed"
     }
-    & $Binary --workspace $RepositoryRoot --format json stop | Out-Null
+    $Doctor = $DoctorResult.StandardOutput | ConvertFrom-Json
+    if ($Doctor.schemaVersion -ne "1" -or $Doctor.data.ready -ne $true) {
+        throw "packaged doctor returned an invalid or unready response"
+    }
+    $StopResult = Invoke-Walaru -Binary $Binary -Arguments @(
+        "--workspace", $SmokeWorkspace, "--format", "json", "stop"
+    ) -TimeoutSeconds 30
+    if ($StopResult.ExitCode -ne 0) {
+        Write-Host $StopResult.StandardError
+        throw "packaged daemon did not stop cleanly"
+    }
+} catch {
+    if ($SmokeWorkspace) { Write-DaemonLogs -WorkspaceRoot $SmokeWorkspace }
+    throw
 } finally {
     if (Test-Path $TemporaryRoot) { Remove-Item -Recurse -Force $TemporaryRoot }
 }

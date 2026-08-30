@@ -645,7 +645,17 @@ impl Daemon {
                 ),
             ));
         };
-        let verifier = Verifier::new(&self.layout, &self.store, RuntimeArtifacts::discover()?);
+        let artifacts = match RuntimeArtifacts::discover() {
+            Ok(artifacts) => artifacts,
+            Err(error) => {
+                return Ok(self.replay_verification_failure(
+                    recording_id,
+                    &recording.capabilities,
+                    &error,
+                ));
+            }
+        };
+        let verifier = Verifier::new(&self.layout, &self.store, artifacts);
         match verifier.verify_replay_event(&recording, &event.id) {
             Ok(replay_run_id) => {
                 let mut envelope = self.envelope(
@@ -712,8 +722,17 @@ impl Daemon {
         };
         match JvmReplayBackend.reverse(&recording, &request) {
             Ok(outcome) => {
-                let verifier =
-                    Verifier::new(&self.layout, &self.store, RuntimeArtifacts::discover()?);
+                let artifacts = match RuntimeArtifacts::discover() {
+                    Ok(artifacts) => artifacts,
+                    Err(error) => {
+                        return Ok(self.replay_verification_failure(
+                            recording_id,
+                            &recording.capabilities,
+                            &error,
+                        ));
+                    }
+                };
+                let verifier = Verifier::new(&self.layout, &self.store, artifacts);
                 match verifier.verify_replay_event(&recording, &outcome.event.id) {
                     Ok(replay_run_id) => {
                         let mut envelope = self.envelope(
@@ -852,6 +871,7 @@ impl DaemonServer {
             socket: layout.socket.clone(),
             metadata: layout.daemon_metadata.clone(),
         };
+        let daemon = Daemon::open(&layout.root)?;
         fs::write(
             &layout.daemon_metadata,
             serde_json::to_vec(&json!({
@@ -861,7 +881,6 @@ impl DaemonServer {
                 "workspaceId": layout.workspace_id,
             }))?,
         )?;
-        let daemon = Daemon::open(&layout.root)?;
 
         loop {
             let (mut stream, _) = listener.accept()?;
@@ -873,6 +892,7 @@ impl DaemonServer {
                     if matches!(
                         error.kind(),
                         io::ErrorKind::UnexpectedEof
+                            | io::ErrorKind::ConnectionAborted
                             | io::ErrorKind::ConnectionReset
                             | io::ErrorKind::BrokenPipe
                     ) =>
@@ -919,6 +939,7 @@ fn is_client_disconnect(error: &DaemonError) -> bool {
             if matches!(
                 source.kind(),
                 io::ErrorKind::BrokenPipe
+                    | io::ErrorKind::ConnectionAborted
                     | io::ErrorKind::ConnectionReset
                     | io::ErrorKind::UnexpectedEof
             )
@@ -1080,6 +1101,9 @@ fn bind_local_endpoint(layout: &WorkspaceLayout) -> Result<LocalListener, Daemon
         }
         fs::remove_file(&layout.socket)?;
     }
+    if layout.daemon_metadata.exists() {
+        fs::remove_file(&layout.daemon_metadata)?;
+    }
     let listener = UnixListener::bind(&layout.socket)?;
     if let Err(error) = fs::set_permissions(&layout.socket, fs::Permissions::from_mode(0o600)) {
         // Some sandboxed Unix filesystems reject chmod on socket inodes. The
@@ -1103,6 +1127,9 @@ fn bind_local_endpoint(layout: &WorkspaceLayout) -> Result<LocalListener, Daemon
             return Err(DaemonError::AlreadyRunning(layout.socket.clone()));
         }
         fs::remove_file(&layout.socket)?;
+    }
+    if layout.daemon_metadata.exists() {
+        fs::remove_file(&layout.daemon_metadata)?;
     }
     let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
     let address = listener.local_addr()?;

@@ -4,6 +4,8 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 #[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
+#[cfg(unix)]
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 
@@ -98,8 +100,9 @@ impl WorkspaceLayout {
             .join(".gradle")
             .join("walaru")
             .join(workspace_id.as_str());
+        let socket = local_endpoint_path(&state_dir, &workspace_id);
         Ok(Self {
-            socket: state_dir.join("daemon.sock"),
+            socket,
             database: state_dir.join("store.sqlite3"),
             daemon_metadata: state_dir.join("daemon.json"),
             root,
@@ -117,6 +120,25 @@ impl WorkspaceLayout {
         builder.create(&self.state_dir)?;
         Ok(())
     }
+}
+
+#[cfg(unix)]
+fn local_endpoint_path(state_dir: &Path, workspace_id: &WorkspaceId) -> PathBuf {
+    // macOS limits sockaddr_un paths to 104 bytes and Linux to 108. Leave room
+    // for the terminating NUL and platform variation, while keeping normal
+    // worktrees entirely under their private state directory.
+    const SAFE_UNIX_SOCKET_PATH_BYTES: usize = 96;
+    let local = state_dir.join("daemon.sock");
+    if local.as_os_str().as_bytes().len() < SAFE_UNIX_SOCKET_PATH_BYTES {
+        local
+    } else {
+        Path::new("/tmp").join(format!("walaru-{}.sock", workspace_id.as_str()))
+    }
+}
+
+#[cfg(not(unix))]
+fn local_endpoint_path(state_dir: &Path, _workspace_id: &WorkspaceId) -> PathBuf {
+    state_dir.join("daemon.sock")
 }
 
 fn collect_files(root: &Path, directory: &Path, output: &mut Vec<PathBuf>) -> io::Result<()> {

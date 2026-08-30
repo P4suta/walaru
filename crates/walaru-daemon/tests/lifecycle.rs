@@ -103,6 +103,33 @@ fn local_server_round_trips_protobuf_and_stop_removes_endpoint() {
     assert!(!layout.socket.exists());
 }
 
+#[cfg(unix)]
+#[test]
+fn long_worktree_path_uses_the_short_endpoint_and_still_round_trips() {
+    let directory = tempdir().unwrap();
+    let workspace = directory.path().join("nested-worktree-".repeat(8));
+    fs::create_dir_all(&workspace).unwrap();
+    let layout = WorkspaceLayout::new(&workspace).unwrap();
+    assert!(layout.socket.starts_with("/tmp"));
+    let server_workspace = workspace.clone();
+    let (exit_tx, exit_rx) = mpsc::channel();
+    let server = thread::spawn(move || {
+        let result = DaemonServer::serve(server_workspace);
+        let _ = exit_tx.send(result.as_ref().err().map(ToString::to_string));
+        result
+    });
+    wait_for_socket(&layout.socket, &server, &exit_rx);
+    assert_eq!(
+        send_request(&layout.socket, &request(&workspace, "status", 1))
+            .unwrap()
+            .exit_code,
+        0
+    );
+    send_request(&layout.socket, &request(&workspace, "stop", 1)).unwrap();
+    server.join().unwrap().unwrap();
+    assert!(!layout.socket.exists());
+}
+
 #[test]
 fn independent_worktrees_and_concurrent_clients_never_share_state() {
     let left = tempdir().unwrap();

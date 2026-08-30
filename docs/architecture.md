@@ -2,7 +2,7 @@
 
 Walaru binds each observation to a canonical hash of source, resource, Maven/Gradle configuration, and wrapper inputs. One worktree owns one daemon and SQLite WAL store under `.gradle/walaru/<workspace-id>`.
 
-The Rust CLI sends bounded, versioned protobuf requests over a local Unix socket or Windows loopback endpoint. Responses use the public JSON envelope. SQLite stores query metadata directly and zstd-compresses events and recordings; orphaned runs are recovered as errors.
+The Rust CLI sends bounded, versioned protobuf requests over a local Unix socket or Windows loopback endpoint. Unix worktrees whose state path exceeds portable socket limits use a workspace-ID endpoint under `/tmp`, still mode `0600`; requests remain bound to the canonical worktree. Responses use the public JSON envelope. SQLite stores query metadata directly and zstd-compresses events and recordings; orphaned runs are recovered as errors.
 
 The Gradle init script or Maven Surefire launch injects a Java ASM agent without editing the target project. Fast verification records deduplicated coverage and dependency evidence. Full recording captures ordered execution, safe values, output positions, supported deterministic inputs, and capability boundaries.
 

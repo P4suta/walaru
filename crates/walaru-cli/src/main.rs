@@ -309,7 +309,10 @@ fn request(
 }
 
 fn ensure_daemon(layout: &WorkspaceLayout) -> Result<(), Box<dyn std::error::Error>> {
-    if layout.socket.exists() && daemon_is_running(&layout.socket) {
+    if layout.socket.exists()
+        && layout.daemon_metadata.exists()
+        && daemon_is_running(&layout.socket)
+    {
         return Ok(());
     }
     layout.ensure_state_dir()?;
@@ -327,7 +330,10 @@ fn ensure_daemon(layout: &WorkspaceLayout) -> Result<(), Box<dyn std::error::Err
         .spawn()?;
     let deadline = Instant::now() + Duration::from_secs(3);
     while Instant::now() < deadline {
-        if layout.socket.exists() && daemon_is_running(&layout.socket) {
+        if layout.socket.exists()
+            && layout.daemon_metadata.exists()
+            && daemon_is_running(&layout.socket)
+        {
             return Ok(());
         }
         if let Some(status) = child.try_wait()? {

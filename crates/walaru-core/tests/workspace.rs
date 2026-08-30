@@ -181,11 +181,36 @@ fn state_is_scoped_to_the_worktree_id_under_gradle() {
     let layout = WorkspaceLayout::new(directory.path()).unwrap();
     assert_eq!(
         layout.state_dir,
-        directory
-            .path()
+        layout
+            .root
             .join(".gradle/walaru")
             .join(layout.workspace_id.as_str())
     );
-    assert_eq!(layout.socket, layout.state_dir.join("daemon.sock"));
+    let in_state_endpoint = layout.state_dir.join("daemon.sock");
+    #[cfg(unix)]
+    assert!(
+        layout.socket == in_state_endpoint
+            || layout.socket
+                == std::path::Path::new("/tmp")
+                    .join(format!("walaru-{}.sock", layout.workspace_id.as_str()))
+    );
+    #[cfg(not(unix))]
+    assert_eq!(layout.socket, in_state_endpoint);
     assert_eq!(layout.database, layout.state_dir.join("store.sqlite3"));
+}
+
+#[cfg(unix)]
+#[test]
+fn long_worktree_paths_use_a_bounded_unix_endpoint() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let directory = tempdir().unwrap();
+    let workspace = directory.path().join("nested-worktree-".repeat(8));
+    fs::create_dir_all(&workspace).unwrap();
+    let layout = WorkspaceLayout::new(&workspace).unwrap();
+    assert_eq!(
+        layout.socket,
+        std::path::Path::new("/tmp").join(format!("walaru-{}.sock", layout.workspace_id.as_str()))
+    );
+    assert!(layout.socket.as_os_str().as_bytes().len() < 96);
 }
