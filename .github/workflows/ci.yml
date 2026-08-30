@@ -64,10 +64,14 @@ jobs:
           cache: gradle
       - name: Check JVM projects
         if: runner.os != 'Windows'
-        run: ./gradlew check --no-daemon
+        run: >-
+          ./gradlew check :jvm-api:javadoc :jvm-client:javadoc :jvm-testkit:javadoc
+          generatePomFileForLibraryPublication --no-daemon
       - name: Check JVM projects on Windows
         if: runner.os == 'Windows'
-        run: ./gradlew.bat check --no-daemon
+        run: >-
+          ./gradlew.bat check :jvm-api:javadoc :jvm-client:javadoc :jvm-testkit:javadoc
+          generatePomFileForLibraryPublication --no-daemon
 
   vscode:
     name: VS Code

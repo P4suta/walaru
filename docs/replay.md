@@ -2,7 +2,7 @@
 
 Walaru calls a replay exact only when the recording manifest is complete for the observed boundaries and a fresh JVM reproduces every observable event through the requested target.
 
-Reverse navigation can select an earlier line, call, write, source location, or write watchpoint. Verification compares kind, logical location, logical thread and virtual-thread identity, coroutine stack, safely captured values, state hash, and output position. Only a match returns exit `0` with `verified: true`.
+Reverse navigation can select an earlier line, call, write, source location, or write watchpoint. Verification compares kind, logical location, logical thread and virtual-thread identity, coroutine stack, safely captured values, state hash, and output position. Explicit library captures, checkpoints, notes, and span state are part of this ordered comparison. Observational fields such as elapsed span duration are intentionally excluded. Only a match returns exit `0` with `verified: true`.
 
 Supported deterministic inputs include selected time, random, and UUID calls. Unique logical thread names permit cooperative event-boundary scheduling. Bounded `Files.readAllBytes` and `Files.readString` inputs are opt-in through `record --capture-file-io`; public traces reveal only a redacted size.
 

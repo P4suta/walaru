@@ -112,6 +112,12 @@ pub struct Event {
     pub location: Option<SourceLocation>,
     /// Safely captured values without invoking user getters or `toString()`.
     pub values: Value,
+    /// Non-deterministic measurements shown to users but excluded from replay equality.
+    #[serde(
+        default = "empty_object",
+        skip_serializing_if = "value_is_empty_object"
+    )]
+    pub observations: Value,
     /// Deterministic state digest at this event.
     pub state_hash: String,
     /// Output stream position.
@@ -156,6 +162,24 @@ pub enum EventKind {
     Input,
     /// Logical replay checkpoint.
     Checkpoint,
+    /// Explicitly named value captured through the public API.
+    Capture,
+    /// Short user-authored trace annotation.
+    Note,
+    /// Explicit user span start.
+    SpanStart,
+    /// Explicit value attached to a user span.
+    SpanValue,
+    /// Explicit user span end.
+    SpanEnd,
+}
+
+fn value_is_empty_object(value: &Value) -> bool {
+    value.as_object().is_some_and(serde_json::Map::is_empty)
+}
+
+fn empty_object() -> Value {
+    Value::Object(serde_json::Map::new())
 }
 
 /// Kotlin- or Java-level source location.

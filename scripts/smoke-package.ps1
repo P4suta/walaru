@@ -101,6 +101,11 @@ try {
     $BundleName = [System.IO.Path]::GetFileNameWithoutExtension($Archive)
     $Binary = Join-Path $TemporaryRoot "$BundleName\bin\walaru.exe"
     if (-not (Test-Path $Binary)) { throw "package is missing bin\walaru.exe" }
+    foreach ($Library in "walaru-api.jar", "walaru-client.jar", "walaru-testkit.jar", "walaru-agent.jar") {
+        if (-not (Test-Path (Join-Path $TemporaryRoot "$BundleName\lib\$Library"))) {
+            throw "package is missing lib\$Library"
+        }
+    }
     $SmokeWorkspace = Join-Path $TemporaryRoot "workspace"
     New-Item -ItemType Directory -Force -Path $SmokeWorkspace | Out-Null
     'rootProject.name = "walaru-package-smoke"' |

@@ -1,15 +1,16 @@
-package io.github.p4suta.walaru.agent;
+package io.github.p4suta.walaru.testkit;
 
+import io.github.p4suta.walaru.WalaruTestLifecycle;
 import org.testng.ITestListener;
 import org.testng.ITestResult;
 
-/** TestNG lifecycle bridge loaded from the agent jar without target-repository changes. */
+/** TestNG listener discovered through TestNG's standard ServiceLoader contract. */
 public final class WalaruTestNgListener implements ITestListener {
     @Override
     public void onTestStart(ITestResult result) {
         if (runnerOwnsLifecycle()) return;
         String name = publicName(result);
-        AgentBridge.testStarted(name, name);
+        WalaruTestLifecycle.started(name, name);
     }
 
     @Override
@@ -29,7 +30,7 @@ public final class WalaruTestNgListener implements ITestListener {
 
     private static void finish(ITestResult result, String status, Throwable failure) {
         if (runnerOwnsLifecycle()) return;
-        AgentBridge.testFinished(publicName(result), status, failure);
+        WalaruTestLifecycle.finished(publicName(result), status, failure);
     }
 
     private static boolean runnerOwnsLifecycle() {

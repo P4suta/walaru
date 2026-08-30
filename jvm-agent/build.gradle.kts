@@ -4,13 +4,11 @@ plugins {
 
 dependencies {
     implementation(project(":jvm-model"))
+    implementation(project(":jvm-testkit"))
     implementation(libs.asm)
     implementation(libs.asm.commons)
-    compileOnly(platform(libs.junit.bom))
-    compileOnly(libs.junit.launcher)
-    compileOnly(libs.testng)
-
     testImplementation(platform(libs.junit.bom))
+    testImplementation(project(":jvm-api"))
     testImplementation(libs.junit.jupiter)
     testImplementation(libs.testng)
     testRuntimeOnly(libs.junit.launcher)

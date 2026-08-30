@@ -26,6 +26,7 @@ use prost::Message;
 use serde::Deserialize;
 use serde_json::json;
 use thiserror::Error;
+use walaru_core::analysis::analyze_failure;
 use walaru_core::protocol::{
     Diagnostic, Envelope, NextAction, Page, RpcRequest, RpcResponse, SCHEMA_VERSION, Status,
 };
@@ -219,6 +220,7 @@ impl Daemon {
             }
             "doctor" => Ok(self.doctor()),
             "verify" => self.verify(&payload),
+            "explain" => self.explain(&payload),
             "tests" => {
                 let result = self.store.tests(query.cursor.as_deref(), query.limit)?;
                 let returned = result.items.len();
@@ -235,26 +237,41 @@ impl Daemon {
             "failure" => {
                 let id = command_string(&payload.command, "id");
                 let failure = self.store.failure(id)?;
-                let mut envelope =
-                    self.envelope(Status::Ok, None, json!({"failure": failure}), Vec::new());
-                if let Some(failure) = failure {
+                let analysis = if let Some(failure) = &failure {
+                    let events = self.store.recent_test_events(
+                        &failure.run_id,
+                        &failure.test_id,
+                        512,
+                        1024 * 1024,
+                    )?;
+                    Some(analyze_failure(failure, &events))
+                } else {
+                    None
+                };
+                let mut envelope = self.envelope(
+                    Status::Ok,
+                    None,
+                    json!({"failure": &failure, "analysis": &analysis}),
+                    Vec::new(),
+                );
+                if let Some(failure) = &failure {
                     envelope.next_actions.push(NextAction {
                         title: "Inspect test trace".into(),
                         argv: vec![
                             "walaru".into(),
                             "trace".into(),
-                            failure.test_id,
+                            failure.test_id.clone(),
                             "--format".into(),
                             "json".into(),
                         ],
                     });
-                    if let Some(event_id) = failure.event_id {
+                    if let Some(event_id) = &failure.event_id {
                         envelope.next_actions.push(NextAction {
                             title: "Inspect failure values".into(),
                             argv: vec![
                                 "walaru".into(),
                                 "values".into(),
-                                event_id,
+                                event_id.clone(),
                                 "--format".into(),
                                 "json".into(),
                             ],
@@ -340,6 +357,7 @@ impl Daemon {
                             "eventId": event.id,
                             "location": event.location,
                             "values": event.values,
+                            "observations": event.observations,
                             "stateHash": event.state_hash,
                         })
                     },
@@ -424,6 +442,97 @@ impl Daemon {
         envelope.revision = outcome.revision;
         envelope.capabilities = outcome.capabilities;
         Ok((outcome.exit_code, envelope))
+    }
+
+    fn explain(&self, payload: &RequestPayload) -> Result<(i32, Envelope), DaemonError> {
+        let (exit_code, verification) = self.verify(payload)?;
+        let failure_ids = verification
+            .data
+            .get("failures")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let maximum = payload
+            .command
+            .get("maxFailures")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(5)
+            .clamp(1, 20) as usize;
+        let artifacts = RuntimeArtifacts::discover();
+        let artifact_error = artifacts.as_ref().err().map(ToString::to_string);
+        let verifier = artifacts
+            .ok()
+            .map(|artifacts| Verifier::new(&self.layout, &self.store, artifacts));
+        let mut explanations = Vec::new();
+        for failure_id in failure_ids.iter().take(maximum) {
+            let Some(failure) = self.store.failure(failure_id)? else {
+                continue;
+            };
+            let events = self.store.recent_test_events(
+                &failure.run_id,
+                &failure.test_id,
+                512,
+                1024 * 1024,
+            )?;
+            let analysis = analyze_failure(&failure, &events);
+            let recording = if let Some(verifier) = &verifier {
+                match verifier.record(&failure.test_id) {
+                    Ok(recording) => json!({
+                        "id": recording.id,
+                        "testId": recording.test_id,
+                        "revision": recording.revision,
+                        "events": recording.events.len(),
+                        "capabilities": recording.capabilities,
+                    }),
+                    Err(error) => json!({"error": error.to_string()}),
+                }
+            } else {
+                json!({
+                    "error": artifact_error
+                        .as_deref()
+                        .unwrap_or("Walaru runtime artifacts are unavailable")
+                })
+            };
+            explanations.push(json!({
+                "failure": failure,
+                "analysis": analysis,
+                "recording": recording,
+            }));
+        }
+
+        let omitted = failure_ids.len().saturating_sub(explanations.len());
+        let build_failure = (exit_code == 1 && explanations.is_empty()).then(|| {
+            json!({
+                "summary": "The build or test worker failed before a structured test failure was captured.",
+                "logFile": verification
+                    .data
+                    .get("logFile")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+                "suggestions": [
+                    "Open the worker log for the compiler, build configuration, or launcher error.",
+                    "Run `walaru doctor` when the log reports a missing runtime or build tool."
+                ]
+            })
+        });
+        let mut envelope = self.envelope(
+            verification.status,
+            verification.run_id.clone(),
+            json!({
+                "verification": verification.data,
+                "explanations": explanations,
+                "omittedFailures": omitted,
+                "buildFailure": build_failure,
+            }),
+            verification.diagnostics,
+        );
+        envelope.revision = verification.revision;
+        envelope.capabilities = verification.capabilities;
+        envelope.next_actions = verification.next_actions;
+        Ok((exit_code, envelope))
     }
 
     fn record(&self, payload: &RequestPayload) -> Result<(i32, Envelope), DaemonError> {

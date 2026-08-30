@@ -20,7 +20,7 @@ mod tui;
 #[command(
     name = "walaru",
     version,
-    about = "AI-first JVM continuous intelligence",
+    about = "Local-first JVM test intelligence and deterministic replay",
     disable_help_subcommand = true
 )]
 struct Cli {
@@ -70,6 +70,8 @@ enum PublicCommand {
     Doctor,
     /// Compile and run conservatively selected tests.
     Verify(VerifyArgs),
+    /// Verify, fully record failures, and explain them from local evidence.
+    Explain(ExplainArgs),
     /// List discovered tests and last results.
     Tests,
     /// Explain one test failure.
@@ -126,6 +128,19 @@ struct VerifyArgs {
     /// Select changes since this VCS revision.
     #[arg(long, conflicts_with = "full")]
     since: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct ExplainArgs {
+    /// Ignore impact history and execute all module tests.
+    #[arg(long, conflicts_with = "since")]
+    full: bool,
+    /// Select changes since this VCS revision.
+    #[arg(long, conflicts_with = "full")]
+    since: Option<String>,
+    /// Maximum failed tests to fully record in this invocation.
+    #[arg(long, default_value_t = 5, value_parser = clap::value_parser!(u8).range(1..=20))]
+    max_failures: u8,
 }
 
 #[derive(Debug, Args)]
@@ -248,6 +263,14 @@ fn command_payload(command: &PublicCommand) -> (&'static str, Value) {
         PublicCommand::Verify(arguments) => (
             "verify",
             json!({"full": arguments.full, "since": arguments.since}),
+        ),
+        PublicCommand::Explain(arguments) => (
+            "explain",
+            json!({
+                "full": arguments.full,
+                "since": arguments.since,
+                "maxFailures": arguments.max_failures,
+            }),
         ),
         PublicCommand::Tests => ("tests", json!({})),
         PublicCommand::Failure { id } => ("failure", json!({"id": id})),

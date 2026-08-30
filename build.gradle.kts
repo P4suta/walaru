@@ -38,4 +38,40 @@ subprojects {
         useJUnitPlatform()
         systemProperty("file.encoding", "UTF-8")
     }
+    tasks.withType<Javadoc>().configureEach {
+        (options as StandardJavadocDocletOptions).addBooleanOption("Xdoclint:all,-missing", true)
+        (options as StandardJavadocDocletOptions).addBooleanOption("quiet", true)
+    }
+
+    pluginManager.withPlugin("maven-publish") {
+        extensions.configure<PublishingExtension> {
+            publications.withType<MavenPublication>().configureEach {
+                pom {
+                    name = project.name
+                    url = "https://github.com/P4suta/walaru"
+                    licenses {
+                        license {
+                            name = "Apache License 2.0"
+                            url = "https://www.apache.org/licenses/LICENSE-2.0.txt"
+                        }
+                        license {
+                            name = "MIT License"
+                            url = "https://opensource.org/license/mit"
+                        }
+                    }
+                    scm {
+                        connection = "scm:git:https://github.com/P4suta/walaru.git"
+                        developerConnection = "scm:git:ssh://git@github.com/P4suta/walaru.git"
+                        url = "https://github.com/P4suta/walaru"
+                    }
+                    developers {
+                        developer {
+                            id = "P4suta"
+                            name = "P4suta"
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

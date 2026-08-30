@@ -54,6 +54,7 @@ fn tests_failures_coverage_trace_and_values_are_structured_and_bounded() {
             symbol: "demo.alpha".into(),
         }),
         values: json!({"unrelated": true}),
+        observations: json!({}),
         state_hash: "state-alpha".into(),
         output_index: 0,
     };
@@ -77,6 +78,7 @@ fn tests_failures_coverage_trace_and_values_are_structured_and_bounded() {
             symbol: "demo.beta".into(),
         }),
         values: json!({"actual": 2, "expected": 3}),
+        observations: json!({}),
         state_hash: "state-failure".into(),
         output_index: 0,
     };

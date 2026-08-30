@@ -33,6 +33,8 @@ Important contract areas are:
 - JSON schema, protobuf round trips, IDs, exit codes, pagination, and response bounds.
 - SQLite WAL recovery, retention, impact widening, coverage, failures, and traces.
 - ASM instrumentation, hostile values, redaction, Kotlin source maps, coroutines, TestNG, Gradle, and Maven.
+- Zero-dependency API no-agent behavior, explicit captures, async context restoration, generated
+  reports, ServiceLoader discovery, typed client argv, and publication metadata.
 - Deterministic inputs, scheduling, fresh-JVM replay, reverse targets, and capability failures.
 - TUI state/input/rendering and VS Code multi-root/trust/argv/size behavior.
 - Cross-platform packages, checksums, `doctor`, and repository security policy.

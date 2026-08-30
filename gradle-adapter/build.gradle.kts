@@ -4,6 +4,8 @@ plugins {
 }
 
 val functionalAgent = configurations.create("functionalAgent")
+val embeddedAgent = configurations.create("embeddedAgent")
+val embeddedApi = configurations.create("embeddedApi")
 
 dependencies {
     implementation(project(":jvm-model"))
@@ -14,6 +16,19 @@ dependencies {
     testImplementation(libs.jackson.databind)
     testRuntimeOnly(libs.junit.launcher)
     functionalAgent(project(path = ":jvm-agent", configuration = "fatJarElements"))
+    embeddedAgent(project(path = ":jvm-agent", configuration = "fatJarElements"))
+    embeddedApi(project(":jvm-api"))
+}
+
+tasks.processResources {
+    from(embeddedAgent) {
+        into("META-INF/walaru")
+        rename { "walaru-agent.jar" }
+    }
+    from(embeddedApi) {
+        into("META-INF/walaru")
+        rename { "walaru-api.jar" }
+    }
 }
 
 val fatJar = tasks.register<Jar>("fatJar") {

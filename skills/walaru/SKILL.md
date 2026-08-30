@@ -31,7 +31,12 @@ If `status` is `stale`, issue one new verify against the latest revision. Stop a
 
 ## Explain failures from evidence
 
-For each ID in `data.failures`:
+For the normal verify-and-diagnose path, run
+`walaru explain --format json --max-failures 5`. It preserves exit `1`, returns deterministic local
+analysis, and creates a bounded full recording for each included failed test. If `data.buildFailure`
+is present, inspect its local worker-log path instead of inventing test evidence.
+
+When a run already exists or finer pagination is needed, use each ID in `data.failures`:
 
 1. Run `walaru failure <failure-id> --format json`.
 2. Query the owning test with `walaru trace <test-id> --format json --limit 100 --max-bytes 65536`.

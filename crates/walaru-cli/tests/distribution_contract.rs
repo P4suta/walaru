@@ -15,6 +15,7 @@ fn repository_documents_and_packages_the_supported_contract() {
         "LICENSE-APACHE",
         "docs/architecture.md",
         "docs/contracts.md",
+        "docs/library-api.md",
         "docs/replay.md",
         "CONTRIBUTING.md",
         "SECURITY.md",
@@ -33,23 +34,37 @@ fn repository_documents_and_packages_the_supported_contract() {
         "clients/vscode/test/client.test.js",
         "clients/intellij/walaru-external-tools.xml",
         "clients/intellij/README.md",
+        "examples/java-library-first/build.gradle.kts",
+        "examples/java-library-first/src/main/java/example/BinarySearch.java",
+        "examples/kotlin-library-first/build.gradle.kts",
+        "examples/kotlin-library-first/src/main/kotlin/example/Statistics.kt",
     ] {
         assert!(root.join(required).is_file(), "missing {required}");
     }
 
     let readme = fs::read_to_string(root.join("README.md")).unwrap();
-    for required in ["JDK 21", "Gradle", "reverse", "structured contract"] {
+    for required in [
+        "JDK 21",
+        "zero-dependency API",
+        "walaruExplain",
+        "explain",
+        "verified: true",
+    ] {
         assert!(readme.contains(required), "README is missing `{required}`");
     }
     let check = fs::read_to_string(root.join("scripts/check.sh")).unwrap();
     assert!(check.contains("cargo test --workspace"));
     assert!(check.contains("./gradlew check"));
+    assert!(check.contains("generatePomFileForLibraryPublication"));
     assert!(check.contains("node --test clients/vscode/test/*.test.js"));
     assert!(!check.contains("/home/"), "check script must be portable");
     let package = fs::read_to_string(root.join("scripts/package-linux.sh")).unwrap();
     assert!(package.contains("skills/walaru"));
     assert!(package.contains("sha256sum"));
     assert!(package.contains("workspace_version"));
+    for library in ["walaru-api.jar", "walaru-client.jar", "walaru-testkit.jar"] {
+        assert!(package.contains(library), "package is missing {library}");
+    }
     assert!(!package.contains("jvm-agent-0.1.0"));
 
     let workflow = fs::read_to_string(root.join(".github/workflows/ci.yml")).unwrap();

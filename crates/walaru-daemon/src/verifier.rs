@@ -679,6 +679,10 @@ impl<'a> Verifier<'a> {
                 "-Dwalaru.agentJar={}",
                 self.artifacts.agent_jar.display()
             ))
+            .arg(format!(
+                "-Dwalaru.workspaceRoot={}",
+                self.layout.root.display()
+            ))
             .arg(format!("-Dwalaru.eventFile={}", files.event.display()))
             .arg(format!("-Dwalaru.mode={}", request.mode.as_str()))
             .arg(format!(
@@ -957,6 +961,10 @@ impl<'a> Verifier<'a> {
                 kind,
                 location,
                 values: raw.get("values").cloned().unwrap_or_else(|| json!({})),
+                observations: raw
+                    .get("observations")
+                    .cloned()
+                    .unwrap_or_else(|| json!({})),
                 state_hash: raw
                     .get("stateHash")
                     .and_then(Value::as_str)
@@ -1443,6 +1451,11 @@ fn event_kind(value: &str) -> EventKind {
         "MONITOR" => EventKind::Monitor,
         "INPUT" => EventKind::Input,
         "CHECKPOINT" => EventKind::Checkpoint,
+        "CAPTURE" => EventKind::Capture,
+        "NOTE" => EventKind::Note,
+        "SPAN_START" => EventKind::SpanStart,
+        "SPAN_VALUE" => EventKind::SpanValue,
+        "SPAN_END" => EventKind::SpanEnd,
         "CALL" | "METHOD_ENTER" | "METHOD_EXIT" => EventKind::Call,
         _ => EventKind::Output,
     }
@@ -1543,6 +1556,11 @@ fn write_replay_schedule(recording: &Recording, path: &Path) -> Result<bool, Ver
             EventKind::Output => "OUTPUT",
             EventKind::Input => "INPUT",
             EventKind::Checkpoint => "CHECKPOINT",
+            EventKind::Capture => "CAPTURE",
+            EventKind::Note => "NOTE",
+            EventKind::SpanStart => "SPAN_START",
+            EventKind::SpanValue => "SPAN_VALUE",
+            EventKind::SpanEnd => "SPAN_END",
         };
         schedule.push_str(category);
         schedule.push('\t');

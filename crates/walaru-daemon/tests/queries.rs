@@ -326,6 +326,7 @@ fn event(id: &str, sequence: u64, kind: EventKind) -> Event {
         kind,
         location: None,
         values: json!({"counter": sequence}),
+        observations: json!({}),
         state_hash: format!("state-{sequence}"),
         output_index: 0,
     }

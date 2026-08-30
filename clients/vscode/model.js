@@ -120,8 +120,36 @@ function formatEnvelope(command, envelope) {
         `Test: ${failure.testId}`,
         `Type: ${failure.exceptionType}`,
         `Message: ${failure.message}`,
-        ...(failure.frames || []).map((frame) => `  ${frame}`),
       );
+      const analysis = data.analysis;
+      if (analysis) {
+        const focus = analysis.focus
+          ? `${analysis.focus.path}:${analysis.focus.line}`
+          : "-";
+        lines.push(
+          "",
+          "Why this probably failed",
+          `  ${analysis.summary}`,
+          `  Evidence: ${analysis.likelyCause}`,
+          `  Focus: ${focus}`,
+        );
+        if (analysis.evidence?.length) {
+          lines.push("", "Relevant state:");
+          for (const item of analysis.evidence.slice(0, 7)) {
+            lines.push(`  ${item.label} = ${compact(item.value)}`);
+          }
+        }
+        if (analysis.suggestions?.length) {
+          lines.push("", "Try next:");
+          for (const suggestion of analysis.suggestions.slice(0, 4)) {
+            lines.push(`  - ${suggestion}`);
+          }
+        }
+      }
+      if (failure.frames?.length) {
+        lines.push("", "Top stack frames:", ...failure.frames.slice(0, 8).map((frame) => `  ${frame}`));
+        if (failure.frames.length > 8) lines.push(`  … ${failure.frames.length - 8} more`);
+      }
     }
   } else if (command === "trace") {
     const events = data.events || [];

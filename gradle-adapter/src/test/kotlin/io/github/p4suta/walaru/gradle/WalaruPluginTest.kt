@@ -14,8 +14,25 @@ class WalaruPluginTest {
 
         assertTrue("walaruModel" in project.tasks.names)
         assertTrue("walaruVerify" in project.tasks.names)
+        assertTrue("walaruRuntime" in project.tasks.names)
+        assertTrue("walaruReport" in project.tasks.names)
+        assertTrue("walaruExplain" in project.tasks.names)
         assertEquals("fast", project.extensions.getByType(WalaruExtension::class.java).mode.get())
         assertEquals(false, project.extensions.getByType(WalaruExtension::class.java).captureFileIo.get())
+    }
+
+    @Test
+    fun `application is idempotent when an init script and build both request Walaru`() {
+        val project = ProjectBuilder.builder().build()
+        project.pluginManager.apply("java")
+        val plugin = WalaruPlugin()
+
+        plugin.apply(project)
+        plugin.apply(project)
+
+        assertTrue(project.extensions.findByName("walaru") is WalaruExtension)
+        assertEquals(1, project.tasks.names.count { it == "walaruRuntime" })
+        assertEquals(1, project.tasks.names.count { it == "walaruVerify" })
     }
 
     @Test

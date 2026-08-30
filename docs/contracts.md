@@ -2,7 +2,16 @@
 
 ## CLI and envelope
 
-Lifecycle commands are `status`, `watch`, `tui`, `stop`, and `doctor`. Execution uses `verify`, `record`, `replay`, and `reverse`; queries use `tests`, `failure`, `impact`, `coverage`, `trace`, and `values`.
+Lifecycle commands are `status`, `watch`, `tui`, `stop`, and `doctor`. Execution uses `verify`, `explain`, `record`, `replay`, and `reverse`; queries use `tests`, `failure`, `impact`, `coverage`, `trace`, and `values`.
+
+`explain` is the human-default compound operation: it verifies the requested revision, loads each
+bounded structured failure, performs deterministic offline analysis, and records up to the requested
+number of failed tests in full. A test failure remains exit `1`; analysis and recording IDs are still
+usable data. It never calls a remote model.
+
+If compilation or build configuration fails before a framework emits a test failure, `explain`
+returns `buildFailure` with a bounded summary, the local worker-log path, and next steps instead of
+pretending that test evidence exists.
 
 Finite commands accept `--format`, `--fields`, `--limit`, `--cursor`, `--max-bytes`, and `--at`. Field masks are relative to `data`. Trace pagination accounts for the projected event size, so excluding a large `values` field does not reduce the requested item count. The final encoded envelope still obeys `--max-bytes`.
 
@@ -14,6 +23,23 @@ diagnostics capabilities nextActions page
 ```
 
 `tests[*].lastFailureId` is nullable and opens the latest structured failure without another search. `nextActions[*].argv` is an argument vector, never a shell string. JSON and NDJSON are stable machine formats; human output and the TUI are presentation layers. The canonical schema is [`schemas/envelope-v1.schema.json`](../schemas/envelope-v1.schema.json).
+
+`failure.data.analysis` and `explain.data.explanations[*].analysis` contain a bounded summary, likely
+cause, optional source focus, already-redacted evidence, and ordered suggestions. This is
+deterministic evidence classification, not a claim of certainty. Additive payload fields do not
+change envelope schema version `1`.
+
+## Library events and reports
+
+The public API emits `capture`, `checkpoint`, `note`, `spanStart`, `spanValue`, and `spanEnd` event
+kinds. Deterministic `values` participate in replay comparison; non-deterministic `observations`
+(currently span duration) do not. `captureRedacted` persists only `<redacted>` and never passes the
+original value across the API bridge.
+
+Gradle reports are separate local artifacts under `build/reports/walaru`: `report.json` has report
+schema version `1`, while `report.md` and `index.html` are presentation formats. The report reader
+bounds individual lines, total events, evidence count, rendered values, stack frames, and escaped
+HTML. Report schema versioning is independent of the CLI envelope version.
 
 ## Exit codes
 

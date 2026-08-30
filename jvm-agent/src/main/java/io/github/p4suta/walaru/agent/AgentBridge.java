@@ -17,6 +17,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.Random;
 import java.util.UUID;
@@ -30,6 +31,7 @@ public final class AgentBridge {
     private static final int MAX_CAPTURED_FILE_BYTES = 1024 * 1024;
     private static final InheritableThreadLocal<TestContext> CURRENT_TEST = new InheritableThreadLocal<>();
     private static final AtomicLong SEQUENCE = new AtomicLong();
+    private static final Set<TestContext> ACTIVE_TESTS = ConcurrentHashMap.newKeySet();
     private static final Set<String> FAST_COVERAGE = ConcurrentHashMap.newKeySet();
     private static final Set<String> FAST_DEPENDENCIES = ConcurrentHashMap.newKeySet();
     private static final Pattern SECRET_MESSAGE = Pattern.compile(
@@ -87,43 +89,60 @@ public final class AgentBridge {
         inputTape = InputTape.disabled();
         replayScheduler = ReplayScheduler.disabled();
         if (tape != null) tape.close();
+        ACTIVE_TESTS.forEach(TestContext::deactivate);
+        ACTIVE_TESTS.clear();
         CURRENT_TEST.remove();
     }
 
     public static void testStarted(String uniqueId, String publicName) {
         String qualifiedName = qualify(publicName);
-        CURRENT_TEST.set(new TestContext(uniqueId, qualifiedName));
+        TestContext previous = CURRENT_TEST.get();
+        if (previous != null) {
+            previous.deactivate();
+            ACTIVE_TESTS.remove(previous);
+        }
+        TestContext context = new TestContext(uniqueId, qualifiedName);
+        ACTIVE_TESTS.add(context);
+        CURRENT_TEST.set(context);
         emit("TEST_START", Map.of("testId", uniqueId, "testName", qualifiedName));
     }
 
     public static void testFinished(String uniqueId, String status, Throwable failure) {
-        Map<String, Object> fields = new LinkedHashMap<>();
-        fields.put("testId", uniqueId);
-        fields.put("status", status);
-        if (failure != null) {
-            fields.put("failureType", failure.getClass().getName());
-            boolean trusted = trustedThrowable(failure);
-            fields.put(
-                    "message",
-                    trusted
-                            ? redactMessage(failure.getMessage())
-                            : "<message unavailable without invoking user code>");
-            List<String> frames = new ArrayList<>();
-            if (trusted) {
-                for (StackTraceElement frame : failure.getStackTrace()) {
-                    if (frames.size() >= 64) break;
-                    frames.add(frame.toString());
+        TestContext context = CURRENT_TEST.get();
+        try {
+            Map<String, Object> fields = new LinkedHashMap<>();
+            fields.put("testId", uniqueId);
+            fields.put("status", status);
+            if (failure != null) {
+                fields.put("failureType", failure.getClass().getName());
+                boolean trusted = trustedThrowable(failure);
+                fields.put(
+                        "message",
+                        trusted
+                                ? redactMessage(failure.getMessage())
+                                : "<message unavailable without invoking user code>");
+                List<String> frames = new ArrayList<>();
+                if (trusted) {
+                    for (StackTraceElement frame : failure.getStackTrace()) {
+                        if (frames.size() >= 64) break;
+                        frames.add(frame.toString());
+                    }
                 }
+                fields.put("frames", frames);
             }
-            fields.put("frames", frames);
+            emit("TEST_FINISH", fields);
+        } finally {
+            if (context != null) {
+                context.deactivate();
+                ACTIVE_TESTS.remove(context);
+            }
+            CURRENT_TEST.remove();
         }
-        emit("TEST_FINISH", fields);
-        CURRENT_TEST.remove();
     }
 
     public static void methodEntered(
             String owner, String method, String descriptor, String path, int line, Object[] arguments) {
-        TestContext test = CURRENT_TEST.get();
+        TestContext test = currentTest();
         if (test == null) return;
         if (mode == AgentMode.FAST
                 && !FAST_DEPENDENCIES.add(
@@ -137,7 +156,7 @@ public final class AgentBridge {
 
     public static void methodExited(
             String owner, String method, String descriptor, String path, int line, boolean threw) {
-        if (CURRENT_TEST.get() == null || mode != AgentMode.FULL) return;
+        if (currentTest() == null || mode != AgentMode.FULL) return;
         emitCode("METHOD_EXIT", owner, method, descriptor, path, line, Map.of("threw", threw));
     }
 
@@ -149,7 +168,7 @@ public final class AgentBridge {
             int line,
             Object receiver,
             Object[] arguments) {
-        TestContext test = CURRENT_TEST.get();
+        TestContext test = currentTest();
         if (test == null) return;
         String key = test.uniqueId + '\0' + path + '\0' + line;
         if (mode == AgentMode.FAST && !FAST_COVERAGE.add(key)) return;
@@ -172,7 +191,7 @@ public final class AgentBridge {
             String targetOwner,
             String targetMethod,
             String targetDescriptor) {
-        TestContext test = CURRENT_TEST.get();
+        TestContext test = currentTest();
         if (test == null) return;
         if (mode == AgentMode.FAST
                 && !FAST_DEPENDENCIES.add("call\0"
@@ -213,7 +232,7 @@ public final class AgentBridge {
             Object value,
             boolean volatileField,
             boolean staticField) {
-        if (CURRENT_TEST.get() == null) return;
+        if (currentTest() == null) return;
         Map<String, Object> values = new LinkedHashMap<>();
         if (mode == AgentMode.FULL) {
             values.put("receiver", SafeValue.capture(receiver));
@@ -255,7 +274,7 @@ public final class AgentBridge {
             Object value,
             boolean volatileField,
             boolean staticField) {
-        if (CURRENT_TEST.get() == null || mode != AgentMode.FULL) return;
+        if (currentTest() == null || mode != AgentMode.FULL) return;
         Map<String, Object> values = new LinkedHashMap<>();
         values.put("receiver", SafeValue.capture(receiver));
         values.put("value", SafeValue.captureNamed(field, value));
@@ -291,7 +310,7 @@ public final class AgentBridge {
             Object array,
             int index,
             Object value) {
-        if (CURRENT_TEST.get() == null || mode != AgentMode.FULL) return;
+        if (currentTest() == null || mode != AgentMode.FULL) return;
         Map<String, Object> values = new LinkedHashMap<>();
         values.put("receiver", SafeValue.capture(array));
         values.put("value", SafeValue.capture(value));
@@ -321,7 +340,7 @@ public final class AgentBridge {
             Object array,
             int index,
             Object value) {
-        if (CURRENT_TEST.get() == null || mode != AgentMode.FULL) return;
+        if (currentTest() == null || mode != AgentMode.FULL) return;
         Map<String, Object> values = new LinkedHashMap<>();
         values.put("targetKind", "array");
         values.put("targetOwner", array == null ? "array" : array.getClass().getTypeName());
@@ -350,7 +369,7 @@ public final class AgentBridge {
             String action,
             String monitorKind,
             Object receiver) {
-        if (CURRENT_TEST.get() == null || mode != AgentMode.FULL) return;
+        if (currentTest() == null || mode != AgentMode.FULL) return;
         Map<String, Object> values = new LinkedHashMap<>();
         values.put("action", action);
         values.put("monitorKind", monitorKind);
@@ -368,62 +387,213 @@ public final class AgentBridge {
                         "values", values));
     }
 
+    /** Public reflection boundary used by the zero-dependency API artifact. */
+    public static boolean apiActive() {
+        return events != null && currentTest() != null;
+    }
+
+    /** Returns an opaque context token used only by the zero-dependency public API. */
+    public static Object apiCaptureContext() {
+        return events == null ? null : currentTest();
+    }
+
+    /** Returns whether an opaque public-API context still belongs to a running test. */
+    public static boolean apiContextActive(Object context) {
+        return events != null && context instanceof TestContext test && test.active();
+    }
+
+    /** Installs an opaque context token and returns the previous token for structured restoration. */
+    public static Object apiSwapContext(Object replacement) {
+        TestContext previous = currentTest();
+        if (events != null && replacement instanceof TestContext context && context.active()) {
+            CURRENT_TEST.set(context);
+        } else {
+            CURRENT_TEST.remove();
+        }
+        return previous;
+    }
+
+    /** Records one explicitly named value without linking the API artifact to the agent. */
+    public static void apiCapture(
+            String name,
+            Object value,
+            boolean redacted,
+            String className,
+            String method,
+            String path,
+            int line) {
+        if (!apiActive()) return;
+        Map<String, Object> values = new LinkedHashMap<>();
+        values.put("name", boundedText(name, 256));
+        values.put("value", redacted ? "<redacted>" : SafeValue.captureNamed(name, value));
+        values.put("redacted", redacted);
+        emitApiCode("CAPTURE", className, method, path, line, Map.of("values", values));
+    }
+
+    /** Records an explicit logical checkpoint and an optional safe value. */
+    public static void apiCheckpoint(
+            String name,
+            Object value,
+            boolean hasValue,
+            String className,
+            String method,
+            String path,
+            int line) {
+        if (!apiActive()) return;
+        Map<String, Object> values = new LinkedHashMap<>();
+        values.put("name", boundedText(name, 256));
+        if (hasValue) values.put("value", SafeValue.captureNamed(name, value));
+        emitApiCode("CHECKPOINT", className, method, path, line, Map.of("values", values));
+    }
+
+    /** Records a short user annotation. */
+    public static void apiNote(
+            String name, String message, String className, String method, String path, int line) {
+        if (!apiActive()) return;
+        Map<String, Object> values = new LinkedHashMap<>();
+        values.put("name", boundedText(name, 256));
+        values.put("message", SafeValue.captureNamed(name, message));
+        emitApiCode("NOTE", className, method, path, line, Map.of("values", values));
+    }
+
+    /** Starts an explicit user span. */
+    public static void apiSpanStarted(
+            String spanId, String name, String className, String method, String path, int line) {
+        if (!apiActive()) return;
+        emitApiCode(
+                "SPAN_START",
+                className,
+                method,
+                path,
+                line,
+                Map.of("values", Map.of("spanId", boundedText(spanId, 128), "name", boundedText(name, 256))));
+    }
+
+    /** Adds a safely captured value to an explicit user span. */
+    public static void apiSpanValue(
+            String spanId,
+            String name,
+            Object value,
+            boolean redacted,
+            String className,
+            String method,
+            String path,
+            int line) {
+        if (!apiActive()) return;
+        Map<String, Object> values = new LinkedHashMap<>();
+        values.put("spanId", boundedText(spanId, 128));
+        values.put("name", boundedText(name, 256));
+        values.put("value", redacted ? "<redacted>" : SafeValue.captureNamed(name, value));
+        values.put("redacted", redacted);
+        emitApiCode("SPAN_VALUE", className, method, path, line, Map.of("values", values));
+    }
+
+    /** Ends an explicit user span. Duration is observational and excluded from replay identity. */
+    public static void apiSpanFinished(
+            String spanId,
+            String name,
+            long durationNanos,
+            Throwable failure,
+            String className,
+            String method,
+            String path,
+            int line) {
+        if (!apiActive()) return;
+        Map<String, Object> values = new LinkedHashMap<>();
+        values.put("spanId", boundedText(spanId, 128));
+        values.put("name", boundedText(name, 256));
+        values.put("status", failure == null ? "ok" : "failed");
+        if (failure != null) {
+            values.put("failureType", failure.getClass().getName());
+            values.put(
+                    "message",
+                    trustedThrowable(failure)
+                            ? redactMessage(failure.getMessage())
+                            : "<message unavailable without invoking user code>");
+        }
+        emitApiCode(
+                "SPAN_END",
+                className,
+                method,
+                path,
+                line,
+                Map.of(
+                        "values", values,
+                        "observations", Map.of("durationNanos", Math.max(0L, durationNanos))));
+    }
+
     public static void capabilityMissing(String capability, String reason) {
-        if (CURRENT_TEST.get() != null) {
+        if (currentTest() != null) {
             emit("CAPABILITY", Map.of("capability", capability, "available", false, "reason", reason));
         }
     }
 
     public static long currentTimeMillis() {
+        if (currentTest() == null) return System.currentTimeMillis();
         return Long.parseLong(inputTape.next("time.currentTimeMillis", () -> Long.toString(System.currentTimeMillis())));
     }
 
     public static long nanoTime() {
+        if (currentTest() == null) return System.nanoTime();
         return Long.parseLong(inputTape.next("time.nanoTime", () -> Long.toString(System.nanoTime())));
     }
 
     public static UUID randomUuid() {
+        if (currentTest() == null) return UUID.randomUUID();
         return UUID.fromString(inputTape.next("uuid.random", () -> UUID.randomUUID().toString()));
     }
 
     public static double mathRandom() {
+        if (currentTest() == null) return Math.random();
         return Double.parseDouble(inputTape.next("random.math", () -> Double.toHexString(Math.random())));
     }
 
     public static int randomNextInt(Random random, int bound) {
+        if (currentTest() == null) return random.nextInt(bound);
         return Integer.parseInt(inputTape.next("random.nextInt.bound", () -> Integer.toString(random.nextInt(bound))));
     }
 
     public static int randomNextInt(Random random) {
+        if (currentTest() == null) return random.nextInt();
         return Integer.parseInt(inputTape.next("random.nextInt", () -> Integer.toString(random.nextInt())));
     }
 
     public static long randomNextLong(Random random) {
+        if (currentTest() == null) return random.nextLong();
         return Long.parseLong(inputTape.next("random.nextLong", () -> Long.toString(random.nextLong())));
     }
 
     public static long randomNextLong(Random random, long bound) {
+        if (currentTest() == null) return random.nextLong(bound);
         return Long.parseLong(inputTape.next("random.nextLong.bound", () -> Long.toString(random.nextLong(bound))));
     }
 
     public static boolean randomNextBoolean(Random random) {
+        if (currentTest() == null) return random.nextBoolean();
         return Boolean.parseBoolean(
                 inputTape.next("random.nextBoolean", () -> Boolean.toString(random.nextBoolean())));
     }
 
     public static float randomNextFloat(Random random) {
+        if (currentTest() == null) return random.nextFloat();
         return Float.valueOf(inputTape.next("random.nextFloat", () -> Float.toHexString(random.nextFloat())));
     }
 
     public static double randomNextDouble(Random random) {
+        if (currentTest() == null) return random.nextDouble();
         return Double.valueOf(inputTape.next("random.nextDouble", () -> Double.toHexString(random.nextDouble())));
     }
 
     public static double randomNextGaussian(Random random) {
+        if (currentTest() == null) return random.nextGaussian();
         return Double.valueOf(inputTape.next("random.nextGaussian", () -> Double.toHexString(random.nextGaussian())));
     }
 
     public static void randomNextBytes(Random random, byte[] destination) {
+        if (currentTest() == null) {
+            random.nextBytes(destination);
+            return;
+        }
         String encoded = inputTape.next("random.nextBytes", () -> {
             random.nextBytes(destination);
             return Base64.getEncoder().encodeToString(destination);
@@ -436,18 +606,22 @@ public final class AgentBridge {
     }
 
     public static Instant instantNow() {
+        if (currentTest() == null) return Instant.now();
         return Instant.parse(inputTape.next("time.instant", () -> Instant.now().toString()));
     }
 
     public static LocalDate localDateNow() {
+        if (currentTest() == null) return LocalDate.now();
         return LocalDate.parse(inputTape.next("time.localDate", () -> LocalDate.now().toString()));
     }
 
     public static LocalDateTime localDateTimeNow() {
+        if (currentTest() == null) return LocalDateTime.now();
         return LocalDateTime.parse(inputTape.next("time.localDateTime", () -> LocalDateTime.now().toString()));
     }
 
     public static byte[] fileReadAllBytes(Path path) throws IOException {
+        if (currentTest() == null) return Files.readAllBytes(path);
         return inputTape.nextBytes(
                 "io.file.readAllBytes." + fileKey(path),
                 () -> Files.readAllBytes(path),
@@ -455,6 +629,7 @@ public final class AgentBridge {
     }
 
     public static String fileReadString(Path path) throws IOException {
+        if (currentTest() == null) return Files.readString(path);
         return new String(
                 inputTape.nextBytes(
                         "io.file.readString." + fileKey(path),
@@ -465,6 +640,7 @@ public final class AgentBridge {
 
     public static String fileReadString(Path path, Charset charset) throws IOException {
         Objects.requireNonNull(charset, "charset");
+        if (currentTest() == null) return Files.readString(path, charset);
         String charsetName = charset.name();
         return new String(
                 inputTape.nextBytes(
@@ -475,13 +651,13 @@ public final class AgentBridge {
     }
 
     static void inputObserved(String kind, String encoded, String value) {
-        if (CURRENT_TEST.get() != null) {
+        if (currentTest() != null) {
             emit("INPUT", Map.of("values", Map.of("kind", kind, "encoded", encoded, "value", value)));
         }
     }
 
     static void inputObservedSensitive(String kind, int byteCount) {
-        if (CURRENT_TEST.get() != null) {
+        if (currentTest() != null) {
             emit("INPUT", Map.of("values", Map.of(
                     "kind", kind,
                     "sensitive", true,
@@ -529,6 +705,24 @@ public final class AgentBridge {
         emit(type, fields);
     }
 
+    private static void emitApiCode(
+            String type,
+            String className,
+            String method,
+            String path,
+            int line,
+            Map<String, ?> extra) {
+        String owner = boundedText(className, 512).replace('.', '/');
+        emitCode(
+                type,
+                owner,
+                boundedText(method, 256),
+                "",
+                boundedText(path, 1024),
+                line,
+                extra);
+    }
+
     private static List<Map<String, Object>> logicalStack(
             String owner, String method, String path, int line) {
         List<Map<String, Object>> frames = new ArrayList<>();
@@ -566,6 +760,8 @@ public final class AgentBridge {
     private static void emit(String type, Map<String, ?> supplied) {
         EventWriter writer = events;
         if (writer == null) return;
+        TestContext test = currentTest();
+        if (CURRENT_TEST.get() != null && test == null) return;
         String threadKey = ReplayScheduler.threadKey();
         replayScheduler.before(type, threadKey);
         try {
@@ -578,7 +774,6 @@ public final class AgentBridge {
             fields.put("virtualThread", Thread.currentThread().isVirtual());
             fields.put("type", type);
             fields.put("module", projectPath);
-            TestContext test = CURRENT_TEST.get();
             if (test != null) {
                 fields.put("testId", test.uniqueId);
                 fields.put("testName", test.publicName);
@@ -635,7 +830,8 @@ public final class AgentBridge {
                         || field.getKey().equals("sequence")
                         || field.getKey().equals("threadId")
                         || field.getKey().equals("threadKey")
-                        || field.getKey().equals("virtualThread")) {
+                        || field.getKey().equals("virtualThread")
+                        || field.getKey().equals("observations")) {
                     continue;
                 }
                 stable.put(field.getKey(), field.getValue());
@@ -689,6 +885,11 @@ public final class AgentBridge {
         return "c:" + key.getClass().getName();
     }
 
+    private static String boundedText(String value, int maxLength) {
+        if (value == null || value.isBlank()) return "unknown";
+        return value.length() <= maxLength ? value : value.substring(0, maxLength);
+    }
+
     private static void updateScalar(MessageDigest digest, char kind, String value) {
         byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
         digest.update((byte) kind);
@@ -697,5 +898,27 @@ public final class AgentBridge {
         digest.update(bytes);
     }
 
-    private record TestContext(String uniqueId, String publicName) {}
+    private static TestContext currentTest() {
+        TestContext context = CURRENT_TEST.get();
+        return context != null && context.active() ? context : null;
+    }
+
+    private static final class TestContext {
+        private final String uniqueId;
+        private final String publicName;
+        private final AtomicBoolean active = new AtomicBoolean(true);
+
+        private TestContext(String uniqueId, String publicName) {
+            this.uniqueId = uniqueId;
+            this.publicName = publicName;
+        }
+
+        private boolean active() {
+            return active.get();
+        }
+
+        private void deactivate() {
+            active.set(false);
+        }
+    }
 }
