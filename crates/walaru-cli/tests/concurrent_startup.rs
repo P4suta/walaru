@@ -2,6 +2,7 @@
 
 use std::collections::BTreeSet;
 use std::fs;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 use std::sync::{Arc, Barrier};
@@ -109,22 +110,44 @@ fn stop_daemon(root: &std::path::Path) -> Output {
 }
 
 fn bounded_output(mut command: Command, timeout: Duration) -> Output {
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    // Capture into regular files instead of pipes. A daemonized grandchild retaining a Windows
+    // pipe handle would otherwise make `wait_with_output` wait for EOF after the client exited.
+    let mut stdout = tempfile::tempfile().unwrap();
+    let mut stderr = tempfile::tempfile().unwrap();
+    command
+        .stdout(Stdio::from(stdout.try_clone().unwrap()))
+        .stderr(Stdio::from(stderr.try_clone().unwrap()));
     let mut child = command.spawn().unwrap();
     let deadline = Instant::now() + timeout;
     loop {
-        if child.try_wait().unwrap().is_some() {
-            return child.wait_with_output().unwrap();
+        if let Some(status) = child.try_wait().unwrap() {
+            return Output {
+                status,
+                stdout: read_capture(&mut stdout),
+                stderr: read_capture(&mut stderr),
+            };
         }
         if Instant::now() >= deadline {
             let _ = child.kill();
-            let output = child.wait_with_output().unwrap();
+            let kill_deadline = Instant::now() + Duration::from_secs(2);
+            while child.try_wait().unwrap().is_none() && Instant::now() < kill_deadline {
+                thread::sleep(Duration::from_millis(20));
+            }
+            let stdout = read_capture(&mut stdout);
+            let stderr = read_capture(&mut stderr);
             panic!(
                 "command timed out after {timeout:?}\nstderr: {}\nstdout: {}",
-                String::from_utf8_lossy(&output.stderr),
-                String::from_utf8_lossy(&output.stdout)
+                String::from_utf8_lossy(&stderr),
+                String::from_utf8_lossy(&stdout)
             );
         }
         thread::sleep(Duration::from_millis(20));
     }
+}
+
+fn read_capture(file: &mut fs::File) -> Vec<u8> {
+    file.seek(SeekFrom::Start(0)).unwrap();
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).unwrap();
+    bytes
 }
