@@ -431,7 +431,7 @@ fn lock_is_contended(error: &io::Error) -> bool {
     {
         // LockFileEx contention can surface while opening or locking the shared file.
         // ERROR_SHARING_VIOLATION is 32 and ERROR_LOCK_VIOLATION is 33.
-        return matches!(error.raw_os_error(), Some(32) | Some(33));
+        matches!(error.raw_os_error(), Some(32 | 33))
     }
     #[cfg(not(windows))]
     false
