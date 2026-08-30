@@ -344,8 +344,16 @@ jobs:
         env:
           RESULTS: ${{ join(needs.*.result, ' ') }}
         run: |
-          if [[ " $RESULTS " == *" failure "* || " $RESULTS " == *" cancelled "* || " $RESULTS " == *" skipped "* ]]; then
-            echo "CI gate results: $RESULTS" >&2
+          read -r -a results <<< "$RESULTS"
+          if (( ${#results[@]} != 10 )); then
+            echo "Expected 10 CI gate results, received ${#results[@]}: $RESULTS" >&2
             exit 1
           fi
+          for result in "${results[@]}"; do
+            # GitHub can surface matrix setup failures as `abandoned`; accept only success.
+            if [[ "$result" != "success" ]]; then
+              echo "CI gate results: $RESULTS" >&2
+              exit 1
+            fi
+          done
           echo "CI gate results: $RESULTS"
