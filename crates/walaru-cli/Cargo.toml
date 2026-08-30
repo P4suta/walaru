@@ -15,6 +15,7 @@ path = "src/main.rs"
 anyhow.workspace = true
 clap.workspace = true
 crossterm.workspace = true
+fs2.workspace = true
 prost.workspace = true
 ratatui.workspace = true
 serde.workspace = true

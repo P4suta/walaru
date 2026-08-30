@@ -1,5 +1,6 @@
 //! Concurrent cold-start contract shared by editor and CLI clients.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::process::Command;
 use std::sync::{Arc, Barrier};
@@ -43,6 +44,7 @@ fn concurrent_clients_share_one_successful_daemon_cold_start() {
         })
         .collect::<Vec<_>>();
 
+    let mut session_ids = BTreeSet::new();
     for client in clients {
         let output = client.join().unwrap();
         assert_eq!(
@@ -55,7 +57,13 @@ fn concurrent_clients_share_one_successful_daemon_cold_start() {
         let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(envelope["schemaVersion"], "1");
         assert_eq!(envelope["status"], "ok");
+        session_ids.insert(envelope["sessionId"].as_str().unwrap().to_owned());
     }
+    assert_eq!(
+        session_ids.len(),
+        1,
+        "concurrent clients must all observe the same daemon session"
+    );
 
     let stopped = Command::new(WALARU)
         .args([
