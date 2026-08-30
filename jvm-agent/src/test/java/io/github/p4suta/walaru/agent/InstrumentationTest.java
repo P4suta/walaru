@@ -403,7 +403,6 @@ final class InstrumentationTest {
             }
             long[] baseline = new long[16];
             long[] observed = new long[16];
-            double[] pairedRatios = new double[baseline.length];
             Object expected = null;
             Object actual = null;
             for (int index = 0; index < baseline.length; index++) {
@@ -422,18 +421,14 @@ final class InstrumentationTest {
                     expected = originalRun.invoke(null, 30_000_000);
                     baseline[index] = threadMetrics.getCurrentThreadCpuTime() - started;
                 }
-                pairedRatios[index] = (double) observed[index] / baseline[index];
             }
             AgentBridge.testFinished("fixture.FastWorkloadTest#works", "passed", null);
             assertEquals(expected, actual);
-            Arrays.sort(pairedRatios);
-            double medianRatio = (pairedRatios[pairedRatios.length / 2 - 1]
-                            + pairedRatios[pairedRatios.length / 2])
-                    / 2.0;
+            double aggregateRatio = aggregateCpuRatio(baseline, observed);
             assertTrue(
-                    medianRatio <= 1.30,
-                    "fast instrumentation median paired CPU-time overhead exceeded 30%: ratio="
-                            + medianRatio
+                    aggregateRatio <= 1.30,
+                    "fast instrumentation aggregate paired CPU-time overhead exceeded 30%: ratio="
+                            + aggregateRatio
                             + " baseline="
                             + Arrays.toString(baseline)
                             + " observed="
@@ -441,6 +436,24 @@ final class InstrumentationTest {
         } finally {
             AgentBridge.closeForTest();
         }
+    }
+
+    @Test
+    void aggregateCpuRatioHandlesCoarseWindowsTimerSamples() {
+        // Each unit is one 15.625 ms CPU-time tick from the Windows regression run.
+        long[] baselineTicks = {4, 3, 5, 3, 2, 2, 3, 3, 4, 5, 3, 0, 3, 2, 3, 2};
+        long[] observedTicks = {3, 4, 2, 4, 3, 3, 4, 5, 3, 3, 4, 5, 1, 3, 3, 4};
+
+        assertEquals(54.0 / 47.0, aggregateCpuRatio(baselineTicks, observedTicks), 0.000_001);
+    }
+
+    private static double aggregateCpuRatio(long[] baseline, long[] observed) {
+        if (baseline.length == 0 || baseline.length != observed.length) {
+            throw new IllegalArgumentException("CPU-time samples must be non-empty paired arrays");
+        }
+        double baselineTotal = Arrays.stream(baseline).asDoubleStream().sum();
+        if (baselineTotal <= 0) throw new IllegalArgumentException("baseline CPU time must be positive");
+        return Arrays.stream(observed).asDoubleStream().sum() / baselineTotal;
     }
 
     private static void runScheduledThreads(boolean startSecondFirst) throws Exception {
