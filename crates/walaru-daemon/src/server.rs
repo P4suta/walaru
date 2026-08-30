@@ -888,26 +888,20 @@ impl DaemonServer {
             stream.set_write_timeout(Some(Duration::from_secs(30)))?;
             let request = match read_message::<RpcRequest>(&mut stream) {
                 Ok(request) => request,
-                Err(DaemonError::Io(error))
-                    if matches!(
-                        error.kind(),
-                        io::ErrorKind::UnexpectedEof
-                            | io::ErrorKind::ConnectionAborted
-                            | io::ErrorKind::ConnectionReset
-                            | io::ErrorKind::BrokenPipe
-                    ) =>
-                {
-                    continue;
-                }
-                // Malformed/untrusted local clients cannot terminate the worktree daemon.
-                Err(DaemonError::Protobuf(_) | DaemonError::FrameTooLarge(_)) => continue,
+                // Per-connection I/O failures and malformed/untrusted local clients cannot
+                // terminate the worktree daemon. In particular, readiness probes connect and
+                // close without sending a frame, which maps to different I/O kinds by OS.
+                Err(
+                    DaemonError::Io(_) | DaemonError::Protobuf(_) | DaemonError::FrameTooLarge(_),
+                ) => continue,
                 Err(error) => return Err(error),
             };
             let response = daemon.handle(request);
-            if let Err(error) = write_message(&mut stream, &response)
-                && !is_client_disconnect(&error)
-            {
-                return Err(error);
+            if write_message(&mut stream, &response).is_err() {
+                if daemon.should_stop() {
+                    break;
+                }
+                continue;
             }
             if daemon.should_stop() {
                 break;
@@ -930,20 +924,6 @@ pub fn send_request(socket: &Path, request: &RpcRequest) -> Result<RpcResponse, 
 #[must_use]
 pub fn daemon_is_running(endpoint: &Path) -> bool {
     connect_local_endpoint(endpoint).is_ok()
-}
-
-fn is_client_disconnect(error: &DaemonError) -> bool {
-    matches!(
-        error,
-        DaemonError::Io(source)
-            if matches!(
-                source.kind(),
-                io::ErrorKind::BrokenPipe
-                    | io::ErrorKind::ConnectionAborted
-                    | io::ErrorKind::ConnectionReset
-                    | io::ErrorKind::UnexpectedEof
-            )
-    )
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]

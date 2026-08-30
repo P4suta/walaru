@@ -27,11 +27,13 @@ fn status_returns_the_fixed_envelope_and_worktree_paths() {
     assert_eq!(envelope.schema_version, "1");
     assert_eq!(envelope.status, walaru_core::protocol::Status::Ok);
     assert_eq!(envelope.data["running"], true);
+    let state_directory = std::path::Path::new(envelope.data["stateDirectory"].as_str().unwrap());
     assert!(
-        envelope.data["stateDirectory"]
-            .as_str()
-            .unwrap()
-            .contains(".gradle/walaru/ws-")
+        state_directory.ends_with(
+            std::path::Path::new(".gradle")
+                .join("walaru")
+                .join(&envelope.workspace_id),
+        )
     );
     assert_eq!(envelope.revision.len(), "rev-".len() + 64);
 }
