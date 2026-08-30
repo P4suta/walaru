@@ -75,6 +75,30 @@ fn repository_documents_and_packages_the_supported_contract() {
     for required in ["ubuntu-24.04", "macos-15", "windows-2025", "21", "25"] {
         assert!(workflow.contains(required), "CI is missing `{required}`");
     }
+    let wrapper_validation = workflow
+        .lines()
+        .find(|line| {
+            line.trim_start()
+                .starts_with("uses: gradle/actions/wrapper-validation@")
+        })
+        .expect("CI must validate committed Gradle wrapper binaries");
+    let revision = wrapper_validation
+        .split_once('@')
+        .and_then(|(_, value)| value.split_whitespace().next())
+        .expect("wrapper-validation action must have a revision");
+    assert!(
+        revision.len() == 40
+            && revision
+                .chars()
+                .all(|character| character.is_ascii_hexdigit()),
+        "wrapper-validation must use an immutable commit SHA"
+    );
+
+    let security = fs::read_to_string(root.join("SECURITY.md")).unwrap();
+    assert!(
+        security.contains("https://github.com/P4suta/walaru/security/advisories/new"),
+        "security policy must link directly to private vulnerability reporting"
+    );
 
     let vscode = fs::read_to_string(root.join("clients/vscode/client.js")).unwrap();
     assert!(vscode.contains("--format"));
