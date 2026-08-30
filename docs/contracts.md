@@ -2,7 +2,7 @@
 
 ## CLI and envelope
 
-Lifecycle commands are `status`, `watch`, `tui`, `stop`, and `doctor`. Execution uses `verify`, `explain`, `record`, `replay`, and `reverse`; queries use `tests`, `failure`, `impact`, `coverage`, `trace`, and `values`.
+Lifecycle commands are `status`, `watch`, `tui`, `cancel`, `stop`, and `doctor`. Execution uses `verify`, `explain`, `record`, `replay`, and `reverse`; queries use `tests`, `failure`, `impact`, `coverage`, `trace`, and `values`.
 
 `explain` is the human-default compound operation: it verifies the requested revision, loads each
 bounded structured failure, performs deterministic offline analysis, and records up to the requested
@@ -30,6 +30,29 @@ diagnostics capabilities nextActions page
 cause, optional source focus, already-redacted evidence, and ordered suggestions. This is
 deterministic evidence classification, not a claim of certainty. Additive payload fields do not
 change envelope schema version `1`.
+
+## Live verification
+
+`verify --overlay-manifest PATH --supersede` is the editor-neutral live boundary. The versioned
+manifest contains complete unsaved UTF-8 documents; its canonical schema is
+[`schemas/overlay-manifest-v1.schema.json`](../schemas/overlay-manifest-v1.schema.json). Paths are
+canonical workspace-relative `/` paths. Requests are limited to 256 documents, 1 MiB per document,
+and 4 MiB total.
+
+Overlays execute in a private persistent mirror and never write the real workspace. The mirror
+retains Gradle state, restores files when an editor buffer becomes clean, and hashes source inputs
+so equal-length edits cannot be missed. `--test` may be repeated for exact public test IDs. Without
+an explicit selection, the normal conservative impact policy applies.
+
+A superseding request cancels the active worker and serializes replacement work. The canceled
+request exits `4` with `status: "stale"`, `data.cancelled: true`, and diagnostic
+`WALARU_SUPERSEDED`. `cancel` is idempotent. Successful and failed verification payloads include
+`overlayVersions`, source-linked `problems`, `testStatuses`, and `valueHints`. A value hint links a
+safe `capture`, `checkpoint`, `note`, `spanValue`, or non-empty line value to its test, event, path,
+and line. Each run returns at most 256 hints and replaces a value larger than 4 KiB with an explicit
+placeholder. `evidenceFormatVersion` lets the daemon reject an older successful cache when newly
+required evidence is unavailable. Clients must publish a result only if its document versions and
+local request generation are still current.
 
 ## Library events and reports
 

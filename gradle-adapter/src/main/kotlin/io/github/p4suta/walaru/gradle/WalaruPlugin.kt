@@ -209,6 +209,12 @@ class WalaruPlugin : Plugin<Project> {
 
         val externallyManagedEventFile = project.providers.systemProperty("walaru.eventFile").isPresent
         testTask.configure { task ->
+            if (externallyManagedEventFile) {
+                // An editor verification is a request for fresh evidence, even when a source-only
+                // edit produces identical bytecode. Re-run only the Test task; compilation and the
+                // rest of the build keep their normal incremental behavior.
+                task.outputs.upToDateWhen { false }
+            }
             val arguments = project.objects.newInstance(WalaruAgentArguments::class.java)
             arguments.agentJar.set(configuration.agentJar)
             arguments.eventFile.set(configuration.eventFile)

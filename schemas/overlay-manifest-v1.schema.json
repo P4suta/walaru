@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p4suta.github.io/walaru/schema/overlay-manifest-v1.schema.json",
+  "title": "Walaru editor overlay manifest v1",
+  "description": "A bounded set of complete unsaved UTF-8 documents. Implementations additionally enforce a 1 MiB UTF-8 byte limit per document and a 4 MiB aggregate byte limit.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "sessionId", "documents"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "sessionId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "documents": {
+      "type": "array",
+      "maxItems": 256,
+      "items": { "$ref": "#/$defs/document" }
+    }
+  },
+  "$defs": {
+    "document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "version", "content"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "^(?!/)(?!.*\\\\)(?!.*//)(?!.*(?:^|/)\\.\\.?(?:/|$)).+$"
+        },
+        "version": { "type": "integer" },
+        "content": { "type": "string", "maxLength": 1048576 }
+      }
+    }
+  }
+}

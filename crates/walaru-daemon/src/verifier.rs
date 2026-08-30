@@ -3,6 +3,8 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -31,9 +33,14 @@ use walaru_core::workspace::{
     RevisionSnapshot, WorkspaceError, WorkspaceLayout, source_surface_digest,
 };
 
+use crate::overlay::{OverlayError, OverlayRequest, OverlayWorkspace};
+
 const MAX_EVENT_LINE_BYTES: usize = 1024 * 1024;
 const MAX_EVENTS_PER_RUN: usize = 1_000_000;
 const MAX_WORKER_LOG_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_LIVE_VALUE_HINTS: usize = 256;
+const MAX_LIVE_VALUE_BYTES: usize = 4 * 1024;
+const VERIFICATION_EVIDENCE_FORMAT_VERSION: u32 = 1;
 
 /// JVM artifacts injected into an unmodified Gradle worktree.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -124,6 +131,8 @@ pub struct VerificationRequest {
     pub since: Option<String>,
     /// Explicitly capture supported bounded file inputs in the private replay tape.
     pub capture_file_io: bool,
+    /// Optional bounded unsaved editor snapshot executed in an isolated shadow workspace.
+    pub overlay: Option<OverlayRequest>,
 }
 
 impl VerificationRequest {
@@ -136,7 +145,61 @@ impl VerificationRequest {
             full: false,
             since: None,
             capture_file_io: false,
+            overlay: None,
         }
+    }
+}
+
+/// Source-linked compiler or build problem extracted from bounded worker output.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkerProblem {
+    /// Workspace-relative source path.
+    pub path: String,
+    /// One-based source line.
+    pub line: u32,
+    /// One-based source column when the tool reported one.
+    pub column: Option<u32>,
+    /// `error` or `warning`.
+    pub severity: String,
+    /// Bounded compiler/build message.
+    pub message: String,
+}
+
+/// Bounded, source-linked runtime value suitable for live editor presentation.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LiveValueHint {
+    /// Public test that observed the value.
+    pub test_id: String,
+    /// Stable event that owns the value.
+    pub event_id: String,
+    /// Workspace-relative source path.
+    pub path: String,
+    /// One-based source line.
+    pub line: u32,
+    /// Human-authored capture/checkpoint name, or a conservative event label.
+    pub label: String,
+    /// Safely captured JSON value; oversized values become an explicit placeholder.
+    pub value: Value,
+}
+
+/// Cooperative cancellation shared by the daemon and a supervised build worker.
+#[derive(Clone, Debug, Default)]
+pub struct CancellationToken {
+    cancelled: Arc<AtomicBool>,
+}
+
+impl CancellationToken {
+    /// Requests cancellation. Repeated calls are harmless.
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
+
+    /// Returns whether cancellation has been requested.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
     }
 }
 
@@ -151,6 +214,9 @@ pub struct RecordingOptions {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VerificationOutcome {
+    /// Internal evidence payload generation used to reject obsolete successful caches.
+    #[serde(default)]
+    pub evidence_format_version: u32,
     /// Run ID.
     pub run_id: String,
     /// Revision seen before worker launch.
@@ -161,6 +227,9 @@ pub struct VerificationOutcome {
     pub exit_code: i32,
     /// Discovered public test IDs.
     pub tests: Vec<String>,
+    /// Terminal status for each test that completed in this run.
+    #[serde(default)]
+    pub test_statuses: BTreeMap<String, String>,
     /// Structured failure IDs.
     pub failures: Vec<String>,
     /// Persisted event count.
@@ -175,6 +244,15 @@ pub struct VerificationOutcome {
     pub selection: String,
     /// Exact public test IDs passed to Gradle, empty when widened to the module.
     pub selected_tests: Vec<String>,
+    /// Exact editor document versions included in this result.
+    #[serde(default)]
+    pub overlay_versions: BTreeMap<String, i64>,
+    /// Source-linked compiler/build problems parsed from bounded worker output.
+    #[serde(default)]
+    pub problems: Vec<WorkerProblem>,
+    /// Bounded source-linked values captured during this exact verification.
+    #[serde(default)]
+    pub value_hints: Vec<LiveValueHint>,
 }
 
 /// Gradle worker or ingestion failure.
@@ -195,9 +273,15 @@ pub enum VerifierError {
     /// Required release artifact was unavailable.
     #[error("required runtime artifact `{0}` was not found")]
     MissingArtifact(String),
+    /// An editor overlay was invalid or could not be materialized safely.
+    #[error(transparent)]
+    Overlay(#[from] OverlayError),
     /// Worker exceeded the configured bound.
     #[error("Gradle worker exceeded timeout of {0:?}")]
     Timeout(Duration),
+    /// A newer live request or explicit cancel superseded this worker.
+    #[error("verification was cancelled")]
+    Cancelled,
     /// A recording run was stale and cannot be replayed.
     #[error("recording run became stale")]
     StaleRecording,
@@ -221,6 +305,7 @@ pub struct Verifier<'a> {
     store: &'a Store,
     artifacts: RuntimeArtifacts,
     timeout: Duration,
+    cancellation: CancellationToken,
 }
 
 impl<'a> Verifier<'a> {
@@ -232,6 +317,7 @@ impl<'a> Verifier<'a> {
             store,
             artifacts,
             timeout: Duration::from_mins(5),
+            cancellation: CancellationToken::default(),
         }
     }
 
@@ -239,6 +325,13 @@ impl<'a> Verifier<'a> {
     #[must_use]
     pub const fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
+        self
+    }
+
+    /// Attaches cooperative cancellation to process supervision.
+    #[must_use]
+    pub fn with_cancellation(mut self, cancellation: CancellationToken) -> Self {
+        self.cancellation = cancellation;
         self
     }
 
@@ -255,8 +348,30 @@ impl<'a> Verifier<'a> {
         request: &VerificationRequest,
         replay_recording: Option<&Recording>,
     ) -> Result<VerificationOutcome, VerifierError> {
+        self.check_cancellation()?;
         validate_artifacts(&self.artifacts)?;
-        let before = RevisionSnapshot::capture(&self.layout.root)?;
+        let overlay_workspace = request
+            .overlay
+            .as_ref()
+            .map(|overlay| {
+                OverlayWorkspace::prepare_cancellable(self.layout, overlay, &|| {
+                    self.cancellation.is_cancelled()
+                })
+            })
+            .transpose()
+            .map_err(|error| {
+                if matches!(&error, OverlayError::Cancelled) {
+                    VerifierError::Cancelled
+                } else {
+                    VerifierError::Overlay(error)
+                }
+            })?;
+        self.check_cancellation()?;
+        let execution_root = overlay_workspace
+            .as_ref()
+            .map_or(self.layout.root.as_path(), OverlayWorkspace::root);
+        let before = RevisionSnapshot::capture(execution_root)?;
+        self.check_cancellation()?;
         let cacheable = replay_recording.is_none()
             && request.mode == VerificationMode::Fast
             && request.selected_tests.is_empty()
@@ -268,12 +383,30 @@ impl<'a> Verifier<'a> {
         if cacheable
             && let Some(payload) = self.store.verification_cache(before.revision.as_str())?
         {
-            let after = RevisionSnapshot::capture(&self.layout.root)?;
+            let after = RevisionSnapshot::capture(execution_root)?;
             if after.revision == before.revision {
                 let mut outcome: VerificationOutcome = serde_json::from_slice(&payload)?;
-                outcome.cached = true;
-                outcome.selection = "cached".into();
-                return Ok(outcome);
+                if outcome.status == RunStatus::Passed
+                    && outcome.exit_code == 0
+                    && outcome.evidence_format_version == VERIFICATION_EVIDENCE_FORMAT_VERSION
+                    && outcome.revision == before.revision.as_str()
+                    && outcome.events > 0
+                    && !outcome.tests.is_empty()
+                {
+                    self.check_cancellation()?;
+                    outcome.cached = true;
+                    outcome.selection = "cached".into();
+                    outcome.overlay_versions = overlay_versions(request);
+                    if outcome.test_statuses.is_empty() {
+                        outcome.test_statuses = outcome
+                            .tests
+                            .iter()
+                            .map(|test| (test.clone(), "passed".into()))
+                            .collect();
+                    }
+                    self.store.update_test_statuses(&outcome.test_statuses)?;
+                    return Ok(outcome);
+                }
             }
         }
         let mut effective_request = request.clone();
@@ -297,6 +430,7 @@ impl<'a> Verifier<'a> {
                 selection = "impact".into();
             }
         }
+        self.check_cancellation()?;
         let run_id = run_id();
         let run_directory = self.layout.state_dir.join("runs").join(&run_id);
         fs::create_dir_all(&run_directory)?;
@@ -305,7 +439,25 @@ impl<'a> Verifier<'a> {
         let schedule_file = run_directory.join("schedule.tape");
         let log_file = run_directory.join("worker.log");
         let model_directory = run_directory.join("model");
-        File::create(&event_file)?;
+        let live_worker_directory = request.overlay.as_ref().map(|overlay| {
+            self.layout
+                .state_dir
+                .join("live")
+                .join(&overlay.session_id)
+                .join("worker")
+        });
+        if let Some(directory) = &live_worker_directory {
+            fs::create_dir_all(directory)?;
+        }
+        let worker_event_file = live_worker_directory.as_ref().map_or_else(
+            || event_file.clone(),
+            |directory| directory.join("events.jsonl"),
+        );
+        let worker_model_directory = live_worker_directory.as_ref().map_or_else(
+            || model_directory.clone(),
+            |directory| directory.join("model"),
+        );
+        File::create(&worker_event_file)?;
         let has_replay_schedule = if let Some(recording) = replay_recording {
             write_replay_inputs(recording, &input_file)?;
             write_replay_schedule(recording, &schedule_file)?
@@ -321,14 +473,14 @@ impl<'a> Verifier<'a> {
         })?;
 
         let worker_files = WorkerFiles {
-            event: &event_file,
+            event: &worker_event_file,
             input: &input_file,
             replay_inputs: replay_recording.is_some(),
             replay_schedule: has_replay_schedule.then_some(schedule_file.as_path()),
-            model_directory: &model_directory,
+            model_directory: &worker_model_directory,
             log: &log_file,
         };
-        let process = self.run_gradle(&effective_request, &worker_files);
+        let process = self.run_gradle(&effective_request, &worker_files, execution_root);
         let process = match process {
             Ok(process) => process,
             Err(error) => {
@@ -341,7 +493,27 @@ impl<'a> Verifier<'a> {
                 return Err(error);
             }
         };
-        let ingested = match self.ingest_events(&run_id, &before, &event_file) {
+        if let Err(error) = self.check_cancellation() {
+            let _ = self.store.finish_run(
+                &run_id,
+                RunStatus::Error,
+                before.revision.as_str(),
+                Utc::now(),
+            );
+            return Err(error);
+        }
+        if worker_event_file != event_file
+            && let Err(error) = fs::copy(&worker_event_file, &event_file)
+        {
+            let _ = self.store.finish_run(
+                &run_id,
+                RunStatus::Error,
+                before.revision.as_str(),
+                Utc::now(),
+            );
+            return Err(error.into());
+        }
+        let ingested = match self.ingest_events(&run_id, &before, &event_file, execution_root) {
             Ok(ingested) => ingested,
             Err(error) => {
                 let _ = self.store.finish_run(
@@ -353,7 +525,7 @@ impl<'a> Verifier<'a> {
                 return Err(error);
             }
         };
-        let after = match RevisionSnapshot::capture(&self.layout.root) {
+        let after = match RevisionSnapshot::capture(execution_root) {
             Ok(after) => after,
             Err(error) => {
                 let _ = self.store.finish_run(
@@ -365,7 +537,18 @@ impl<'a> Verifier<'a> {
                 return Err(error.into());
             }
         };
-        let desired = if process.success {
+        let fresh_evidence_missing = process.success
+            && (ingested
+                .test_statuses
+                .values()
+                .all(|status| status != "passed")
+                || ingested.test_statuses.len() != ingested.tests.len()
+                || effective_request.selected_tests.iter().any(|test| {
+                    ingested.test_statuses.get(test).map(String::as_str) != Some("passed")
+                }));
+        let desired = if fresh_evidence_missing {
+            RunStatus::Error
+        } else if process.success {
             RunStatus::Passed
         } else {
             RunStatus::Failed
@@ -379,12 +562,16 @@ impl<'a> Verifier<'a> {
             RunStatus::Stale => 4,
             RunStatus::Error | RunStatus::Running => 3,
         };
+        let problems = worker_problems(&log_file, execution_root).unwrap_or_default();
+        let overlay_versions = overlay_versions(request);
         let outcome = VerificationOutcome {
+            evidence_format_version: VERIFICATION_EVIDENCE_FORMAT_VERSION,
             run_id,
             revision: before.revision.to_string(),
             status,
             exit_code,
             tests: ingested.tests,
+            test_statuses: ingested.test_statuses,
             failures: ingested.failures,
             events: ingested.event_count,
             capabilities: ingested.capabilities,
@@ -392,6 +579,9 @@ impl<'a> Verifier<'a> {
             cached: false,
             selection,
             selected_tests: effective_request.selected_tests,
+            overlay_versions,
+            problems,
+            value_hints: ingested.value_hints,
         };
         if cacheable && outcome.status == RunStatus::Passed {
             self.store.save_verification_cache(
@@ -516,13 +706,14 @@ impl<'a> Verifier<'a> {
             .split(|byte| *byte == 0)
             .filter(|field| !field.is_empty())
             .collect::<Vec<_>>();
-        if fields.len() % 2 != 0 {
+        let (pairs, remainder) = fields.as_chunks::<2>();
+        if !remainder.is_empty() {
             return Ok(None);
         }
         let mut selected = BTreeSet::new();
-        for pair in fields.chunks_exact(2) {
-            let status = String::from_utf8_lossy(pair[0]);
-            let path = String::from_utf8_lossy(pair[1]).replace('\\', "/");
+        for [status, path] in pairs {
+            let status = String::from_utf8_lossy(status);
+            let path = String::from_utf8_lossy(path).replace('\\', "/");
             if status != "M" || !implementation_source(&path) {
                 return Ok(None);
             }
@@ -568,6 +759,7 @@ impl<'a> Verifier<'a> {
             full: false,
             since: None,
             capture_file_io: options.capture_file_io,
+            overlay: None,
         })?;
         if outcome.status == RunStatus::Stale {
             return Err(VerifierError::StaleRecording);
@@ -639,6 +831,7 @@ impl<'a> Verifier<'a> {
                     .inputs
                     .iter()
                     .any(|input| input.kind.starts_with("io.file.")),
+                overlay: None,
             },
             Some(recording),
         )?;
@@ -657,16 +850,19 @@ impl<'a> Verifier<'a> {
         &self,
         request: &VerificationRequest,
         files: &WorkerFiles<'_>,
+        execution_root: &Path,
     ) -> Result<ProcessOutcome, VerifierError> {
-        if self.layout.root.join("pom.xml").is_file() && !has_gradle_wrapper(&self.layout.root) {
-            return self.run_maven(request, files);
+        if execution_root.join("pom.xml").is_file() && !has_gradle_wrapper(execution_root) {
+            return self.run_maven(request, files, execution_root);
         }
-        let gradle = build_tool_executable(&self.layout.root, "gradlew", "gradlew.bat", "gradle");
+        let gradle = build_tool_executable(execution_root, "gradlew", "gradlew.bat", "gradle");
         let log = File::create(files.log)?;
         let error_log = log.try_clone()?;
         let mut command = Command::new(gradle);
+        if request.overlay.is_none() || request.mode == VerificationMode::Full {
+            command.arg("--no-daemon");
+        }
         command
-            .arg("--no-daemon")
             .arg("--configuration-cache")
             .arg("--init-script")
             .arg(&self.artifacts.init_script)
@@ -681,7 +877,7 @@ impl<'a> Verifier<'a> {
             ))
             .arg(format!(
                 "-Dwalaru.workspaceRoot={}",
-                self.layout.root.display()
+                execution_root.display()
             ))
             .arg(format!("-Dwalaru.eventFile={}", files.event.display()))
             .arg(format!("-Dwalaru.mode={}", request.mode.as_str()))
@@ -689,7 +885,7 @@ impl<'a> Verifier<'a> {
                 "-Dwalaru.modelDirectory={}",
                 files.model_directory.display()
             ))
-            .current_dir(&self.layout.root)
+            .current_dir(execution_root)
             .stdin(Stdio::null())
             .stdout(Stdio::from(log))
             .stderr(Stdio::from(error_log));
@@ -730,9 +926,10 @@ impl<'a> Verifier<'a> {
         &self,
         request: &VerificationRequest,
         files: &WorkerFiles<'_>,
+        execution_root: &Path,
     ) -> Result<ProcessOutcome, VerifierError> {
-        let maven = build_tool_executable(&self.layout.root, "mvnw", "mvnw.cmd", "mvn");
-        let roots = self.layout.root.to_string_lossy();
+        let maven = build_tool_executable(execution_root, "mvnw", "mvnw.cmd", "mvn");
+        let roots = execution_root.to_string_lossy();
         let mut fork_arguments = vec![
             format!("-javaagent:{}", self.artifacts.agent_jar.display()),
             format!("-Dwalaru.eventFile={}", files.event.display()),
@@ -781,7 +978,7 @@ impl<'a> Verifier<'a> {
             .arg("-Dsurefire.useModulePath=false")
             .arg("-Dsurefire.failIfNoSpecifiedTests=false")
             .arg("-DforkCount=1")
-            .current_dir(&self.layout.root)
+            .current_dir(execution_root)
             .stdin(Stdio::null())
             .stdout(Stdio::from(log))
             .stderr(Stdio::from(error_log));
@@ -810,6 +1007,10 @@ impl<'a> Verifier<'a> {
     fn supervise(&self, mut child: std::process::Child) -> Result<ProcessOutcome, VerifierError> {
         let started = Instant::now();
         loop {
+            if self.cancellation.is_cancelled() {
+                terminate_process_tree(&mut child);
+                return Err(VerifierError::Cancelled);
+            }
             if let Some(status) = child.try_wait()? {
                 return Ok(ProcessOutcome {
                     success: status.success(),
@@ -820,6 +1021,14 @@ impl<'a> Verifier<'a> {
                 return Err(VerifierError::Timeout(self.timeout));
             }
             thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn check_cancellation(&self) -> Result<(), VerifierError> {
+        if self.cancellation.is_cancelled() {
+            Err(VerifierError::Cancelled)
+        } else {
+            Ok(())
         }
     }
 
@@ -838,6 +1047,7 @@ impl<'a> Verifier<'a> {
         run_id: &str,
         revision: &RevisionSnapshot,
         event_file: &Path,
+        execution_root: &Path,
     ) -> Result<Ingested, VerifierError> {
         if !event_file.is_file() {
             return Ok(Ingested::default());
@@ -866,8 +1076,10 @@ impl<'a> Verifier<'a> {
         let mut monitor_order = false;
         let mut volatile_access = false;
         let mut event_count = 0_usize;
+        let mut value_hints = Vec::new();
 
         while read_bounded_line(&mut reader, &mut line, MAX_EVENT_LINE_BYTES)? != 0 {
+            self.check_cancellation()?;
             if line.iter().all(u8::is_ascii_whitespace) {
                 continue;
             }
@@ -907,7 +1119,7 @@ impl<'a> Verifier<'a> {
             let path = raw
                 .get("path")
                 .and_then(Value::as_str)
-                .map(|path| resolve_source_path(&self.layout.root, path));
+                .map(|path| resolve_source_path(execution_root, path));
             let line_number = raw
                 .get("line")
                 .and_then(Value::as_u64)
@@ -933,6 +1145,7 @@ impl<'a> Verifier<'a> {
                 sequence,
                 thread_id,
             };
+            let event_values = public_event_values(raw.get("values"));
             let event = Event {
                 id: EventId::new(&identity).to_string(),
                 sequence,
@@ -960,7 +1173,7 @@ impl<'a> Verifier<'a> {
                     .collect(),
                 kind,
                 location,
-                values: public_event_values(raw.get("values")),
+                values: event_values,
                 observations: raw
                     .get("observations")
                     .cloned()
@@ -972,6 +1185,11 @@ impl<'a> Verifier<'a> {
                     .into(),
                 output_index: raw.get("outputIndex").and_then(Value::as_u64).unwrap_or(0),
             };
+            if value_hints.len() < MAX_LIVE_VALUE_HINTS
+                && let Some(hint) = live_value_hint(&event, &test_id)
+            {
+                value_hints.push(hint);
+            }
             self.store.append_event(run_id, &test_id, &event)?;
             last_event.insert(test_id.clone(), event.id.clone());
             event_count += 1;
@@ -1210,10 +1428,16 @@ impl<'a> Verifier<'a> {
         if (field_reads || array_writes || monitor_order || volatile_access) && scheduled_threads {
             supported.push("memorySchedule".into());
         }
+        let test_statuses = tests
+            .iter()
+            .filter_map(|(test, status)| status.clone().map(|status| (test.clone(), status)))
+            .collect();
         Ok(Ingested {
             tests: tests.into_keys().collect(),
+            test_statuses,
             failures,
             event_count,
+            value_hints,
             capabilities: CapabilityManifest {
                 backend: "jvm".into(),
                 completeness: if unavailable.is_empty() {
@@ -1246,8 +1470,10 @@ struct WorkerFiles<'a> {
 #[derive(Debug)]
 struct Ingested {
     tests: Vec<String>,
+    test_statuses: BTreeMap<String, String>,
     failures: Vec<String>,
     event_count: usize,
+    value_hints: Vec<LiveValueHint>,
     capabilities: CapabilityManifest,
 }
 
@@ -1255,8 +1481,10 @@ impl Default for Ingested {
     fn default() -> Self {
         Self {
             tests: Vec::new(),
+            test_statuses: BTreeMap::new(),
             failures: Vec::new(),
             event_count: 0,
+            value_hints: Vec::new(),
             capabilities: CapabilityManifest {
                 backend: "jvm".into(),
                 completeness: Completeness::Partial,
@@ -1362,6 +1590,152 @@ fn truncate_file_tail(path: &Path, max_bytes: u64) -> std::io::Result<()> {
     let mut tail = Vec::with_capacity(usize::try_from(max_bytes).unwrap_or(8 * 1024 * 1024));
     input.take(max_bytes).read_to_end(&mut tail)?;
     fs::write(path, tail)
+}
+
+fn overlay_versions(request: &VerificationRequest) -> BTreeMap<String, i64> {
+    request
+        .overlay
+        .as_ref()
+        .map_or_else(BTreeMap::new, |overlay| {
+            overlay
+                .documents
+                .iter()
+                .map(|document| (document.path.clone(), document.version))
+                .collect()
+        })
+}
+
+fn worker_problems(log_file: &Path, execution_root: &Path) -> std::io::Result<Vec<WorkerProblem>> {
+    let contents = fs::read(log_file)?;
+    let mut unique = BTreeSet::new();
+    let mut problems = Vec::new();
+    for line in String::from_utf8_lossy(&contents).lines() {
+        let Some(problem) = parse_worker_problem(line, execution_root) else {
+            continue;
+        };
+        let key = (
+            problem.path.clone(),
+            problem.line,
+            problem.column,
+            problem.severity.clone(),
+            problem.message.clone(),
+        );
+        if unique.insert(key) {
+            problems.push(problem);
+        }
+        if problems.len() >= 256 {
+            break;
+        }
+    }
+    Ok(problems)
+}
+
+fn parse_worker_problem(line: &str, execution_root: &Path) -> Option<WorkerProblem> {
+    if line.len() > 16 * 1024 {
+        return None;
+    }
+    let (marker, marker_index) = [".java:", ".kt:", ".kts:"]
+        .into_iter()
+        .filter_map(|marker| line.find(marker).map(|index| (marker, index)))
+        .min_by_key(|(_, index)| *index)?;
+    let path_end = marker_index + marker.len() - 1;
+    let raw_path = compiler_path(&line[..path_end]);
+    let relative = relative_problem_path(raw_path, execution_root)?;
+    let (line_number, column, remainder) = compiler_position(&line[path_end + 1..])?;
+    let lowered = line.to_ascii_lowercase();
+    let severity = if lowered.contains("warning") || line.trim_start().starts_with("w:") {
+        "warning"
+    } else {
+        "error"
+    };
+    let message = remainder
+        .trim()
+        .trim_start_matches(':')
+        .trim()
+        .trim_start_matches("error:")
+        .trim_start_matches("warning:")
+        .trim()
+        .chars()
+        .take(2_000)
+        .collect::<String>();
+    Some(WorkerProblem {
+        path: relative,
+        line: line_number,
+        column,
+        severity: severity.into(),
+        message: if message.is_empty() {
+            "Compiler reported a problem".into()
+        } else {
+            message
+        },
+    })
+}
+
+fn compiler_path(prefix: &str) -> &str {
+    let trimmed = prefix.trim();
+    if let Some(index) = trimmed.rfind("file://") {
+        return trimmed[index + "file://".len()..].trim();
+    }
+    for marker in ["[ERROR] ", "[WARNING] ", "e: ", "w: "] {
+        if let Some(path) = trimmed.strip_prefix(marker) {
+            return path.trim();
+        }
+    }
+    trimmed
+}
+
+fn relative_problem_path(path: &str, root: &Path) -> Option<String> {
+    let mut normalized = path.trim_matches(['\'', '"']).replace('\\', "/");
+    let root = root.to_string_lossy().replace('\\', "/");
+    if cfg!(windows) && normalized.starts_with('/') && normalized.get(2..3) == Some(":") {
+        normalized.remove(0);
+    }
+    let root_prefix = format!("{}/", root.trim_end_matches('/'));
+    let relative = if let Some(value) = normalized.strip_prefix(&root_prefix) {
+        value.to_owned()
+    } else {
+        normalized
+    };
+    let candidate = Path::new(&relative);
+    if relative.is_empty()
+        || candidate.is_absolute()
+        || candidate
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return None;
+    }
+    Some(relative)
+}
+
+fn compiler_position(value: &str) -> Option<(u32, Option<u32>, &str)> {
+    let value = value.trim_start();
+    if let Some(rest) = value.strip_prefix('[') {
+        let (position, remainder) = rest.split_once(']')?;
+        let mut parts = position.split(',').map(str::trim);
+        let line = parts.next()?.parse().ok()?;
+        let column = parts.next().and_then(|part| part.parse().ok());
+        return (line > 0).then_some((line, column.filter(|column| *column > 0), remainder));
+    }
+    if let Some(rest) = value.strip_prefix('(') {
+        let (position, remainder) = rest.split_once(')')?;
+        let mut parts = position.split(',').map(str::trim);
+        let line = parts.next()?.parse().ok()?;
+        let column = parts.next().and_then(|part| part.parse().ok());
+        return (line > 0).then_some((line, column.filter(|column| *column > 0), remainder));
+    }
+    let (line, remainder) = value.split_once(':')?;
+    let line = line.trim().parse().ok()?;
+    if line == 0 {
+        return None;
+    }
+    let remainder = remainder.trim_start();
+    if let Some((candidate, rest)) = remainder.split_once(':')
+        && let Ok(column) = candidate.trim().parse::<u32>()
+    {
+        return Some((line, (column > 0).then_some(column), rest));
+    }
+    Some((line, None, remainder))
 }
 
 fn validate_artifacts(artifacts: &RuntimeArtifacts) -> Result<(), VerifierError> {
@@ -1482,6 +1856,65 @@ fn public_event_values(raw: Option<&Value>) -> Value {
         object.remove("encoded");
     }
     values
+}
+
+fn live_value_hint(event: &Event, test_id: &str) -> Option<LiveValueHint> {
+    let location = event.location.as_ref()?;
+    if !canonical_relative_source_path(&location.path) {
+        return None;
+    }
+    let object = event.values.as_object()?;
+    let (fallback_label, value) = match event.kind {
+        EventKind::Capture | EventKind::SpanValue => ("value", object.get("value")?.clone()),
+        EventKind::Checkpoint => (
+            "checkpoint",
+            object
+                .get("value")
+                .cloned()
+                .unwrap_or_else(|| Value::String("reached".into())),
+        ),
+        EventKind::Note => ("note", object.get("message")?.clone()),
+        EventKind::Line if !object.is_empty() => ("values", event.values.clone()),
+        _ => return None,
+    };
+    let label = object
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or(fallback_label)
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(80)
+        .collect::<String>();
+    let value = if serde_json::to_vec(&value)
+        .map_or(true, |encoded| encoded.len() > MAX_LIVE_VALUE_BYTES)
+    {
+        Value::String(format!(
+            "<value exceeds {MAX_LIVE_VALUE_BYTES}-byte live display limit; query event>"
+        ))
+    } else {
+        value
+    };
+    Some(LiveValueHint {
+        test_id: test_id.into(),
+        event_id: event.id.clone(),
+        path: location.path.clone(),
+        line: location.line,
+        label: if label.is_empty() {
+            fallback_label.into()
+        } else {
+            label
+        },
+        value,
+    })
+}
+
+fn canonical_relative_source_path(value: &str) -> bool {
+    !value.is_empty()
+        && !value.contains('\\')
+        && !Path::new(value).is_absolute()
+        && Path::new(value)
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
 }
 
 fn sensitive_placeholder(values: &serde_json::Map<String, Value>) -> Option<String> {
@@ -1902,5 +2335,97 @@ mod tests {
             }))),
             json!({"value": "<redacted>", "redacted": true}),
         );
+    }
+
+    #[test]
+    fn live_value_hints_are_named_source_linked_and_individually_bounded() {
+        let event = |path: &str, value: Value| Event {
+            id: "evt-live".into(),
+            sequence: 1,
+            thread_id: 1,
+            thread_key: String::new(),
+            virtual_thread: false,
+            coroutine: false,
+            logical_stack: Vec::new(),
+            kind: EventKind::Capture,
+            location: Some(SourceLocation {
+                path: path.into(),
+                line: 12,
+                column: 1,
+                symbol: "demo.App#run".into(),
+            }),
+            values: value,
+            observations: json!({}),
+            state_hash: "state".into(),
+            output_index: 0,
+        };
+
+        let hint = live_value_hint(
+            &event(
+                "src/main/java/demo/App.java",
+                json!({"name": "middle", "value": 3}),
+            ),
+            "demo.AppTest#works",
+        )
+        .unwrap();
+        assert_eq!(hint.label, "middle");
+        assert_eq!(hint.value, json!(3));
+        assert_eq!(hint.line, 12);
+        assert!(
+            live_value_hint(
+                &event("../outside.java", json!({"name": "value", "value": 1})),
+                "demo.AppTest#works"
+            )
+            .is_none()
+        );
+
+        let oversized = live_value_hint(
+            &event(
+                "src/main/java/demo/App.java",
+                json!({"name": "payload", "value": "x".repeat(MAX_LIVE_VALUE_BYTES + 1)}),
+            ),
+            "demo.AppTest#works",
+        )
+        .unwrap();
+        assert!(oversized.value.as_str().unwrap().contains("exceeds"));
+    }
+
+    #[test]
+    fn compiler_output_becomes_bounded_source_linked_problems() {
+        let root = Path::new("/work/live");
+        assert_eq!(
+            parse_worker_problem(
+                "/work/live/src/main/java/demo/App.java:12: error: cannot find symbol",
+                root,
+            ),
+            Some(WorkerProblem {
+                path: "src/main/java/demo/App.java".into(),
+                line: 12,
+                column: None,
+                severity: "error".into(),
+                message: "cannot find symbol".into(),
+            })
+        );
+        assert_eq!(
+            parse_worker_problem(
+                "[WARNING] /work/live/src/main/kotlin/demo/App.kt:[8,3] unused value",
+                root,
+            ),
+            Some(WorkerProblem {
+                path: "src/main/kotlin/demo/App.kt".into(),
+                line: 8,
+                column: Some(3),
+                severity: "warning".into(),
+                message: "unused value".into(),
+            })
+        );
+        assert!(
+            parse_worker_problem(
+                "/work/live-other/src/main/java/demo/App.java:2: error: outside mirror",
+                root,
+            )
+            .is_none()
+        );
+        assert!(parse_worker_problem("error: no source location", root).is_none());
     }
 }

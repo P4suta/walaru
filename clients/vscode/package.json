@@ -18,7 +18,12 @@
   ],
   "main": "./extension.js",
   "activationEvents": [
-    "onView:walaru.tests"
+    "onView:walaru.tests",
+    "onLanguage:java",
+    "onLanguage:kotlin",
+    "workspaceContains:**/build.gradle",
+    "workspaceContains:**/build.gradle.kts",
+    "workspaceContains:**/pom.xml"
   ],
   "contributes": {
     "commands": [
@@ -30,6 +35,9 @@
       { "command": "walaru.failure", "title": "Walaru: Open Failure" },
       { "command": "walaru.trace", "title": "Walaru: Open Trace" },
       { "command": "walaru.record", "title": "Walaru: Record Test" },
+      { "command": "walaru.runLive", "title": "Walaru: Run Live Verification Now" },
+      { "command": "walaru.pauseLive", "title": "Walaru: Pause Live Verification" },
+      { "command": "walaru.resumeLive", "title": "Walaru: Resume Live Verification" },
       { "command": "walaru.openTui", "title": "Walaru: Open TUI" }
     ],
     "viewsContainers": {
@@ -52,6 +60,7 @@
     "menus": {
       "view/title": [
         { "command": "walaru.refresh", "when": "view == walaru.tests", "group": "navigation" },
+        { "command": "walaru.runLive", "when": "view == walaru.tests", "group": "navigation" },
         { "command": "walaru.openTui", "when": "view == walaru.tests", "group": "navigation" }
       ],
       "view/item/context": [
@@ -79,6 +88,26 @@
           "maximum": 300,
           "scope": "resource",
           "description": "Refresh interval while the Walaru view is visible."
+        },
+        "walaru.live.mode": {
+          "type": "string",
+          "enum": ["automatic", "onSave", "off"],
+          "enumDescriptions": [
+            "Verify unsaved Java/Kotlin edits after the debounce window.",
+            "Verify after files are saved.",
+            "Disable live verification."
+          ],
+          "default": "automatic",
+          "scope": "resource",
+          "description": "When Walaru verifies source changes."
+        },
+        "walaru.live.debounceMilliseconds": {
+          "type": "number",
+          "default": 500,
+          "minimum": 100,
+          "maximum": 5000,
+          "scope": "resource",
+          "description": "Quiet period after typing before an unsaved snapshot is verified."
         }
       }
     }

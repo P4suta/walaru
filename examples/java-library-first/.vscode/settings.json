@@ -1,0 +1,5 @@
+{
+  "walaru.binaryPath": "../../target/debug/walaru",
+  "walaru.live.mode": "automatic",
+  "walaru.live.debounceMilliseconds": 500
+}

@@ -12,6 +12,9 @@ const required = [
   "walaru.failure",
   "walaru.trace",
   "walaru.record",
+  "walaru.runLive",
+  "walaru.pauseLive",
+  "walaru.resumeLive",
   "walaru.openTui",
 ];
 for (const command of required) {
@@ -23,6 +26,14 @@ if (manifest.contributes?.configuration?.properties?.["walaru.binaryPath"]?.scop
 }
 if (manifest.contributes?.configuration?.properties?.["walaru.refreshIntervalSeconds"]?.scope !== "resource") {
   throw new Error("walaru.refreshIntervalSeconds must be resource scoped");
+}
+for (const setting of ["walaru.live.mode", "walaru.live.debounceMilliseconds"]) {
+  if (manifest.contributes?.configuration?.properties?.[setting]?.scope !== "resource") {
+    throw new Error(`${setting} must be resource scoped`);
+  }
+}
+if (!manifest.activationEvents.includes("onLanguage:java")) {
+  throw new Error("Walaru must activate for Java editing");
 }
 if (!manifest.contributes?.viewsContainers?.activitybar?.some((item) => item.id === "walaru")) {
   throw new Error("missing Walaru activity bar container");

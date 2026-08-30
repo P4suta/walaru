@@ -7,10 +7,13 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use tempfile::tempdir;
-use walaru_core::store::{RetentionPolicy, RunStatus, Store};
+use walaru_core::store::{RetentionPolicy, RunStatus, Store, TestRecord};
 use walaru_core::workspace::WorkspaceLayout;
 use walaru_daemon::VerifierError;
-use walaru_daemon::{RecordingOptions, RuntimeArtifacts, VerificationRequest, Verifier};
+use walaru_daemon::{
+    OverlayDocument, OverlayRequest, RecordingOptions, RuntimeArtifacts, VerificationRequest,
+    Verifier,
+};
 
 #[test]
 fn successful_gradle_run_ingests_tests_coverage_trace_and_values() {
@@ -27,6 +30,13 @@ fn successful_gradle_run_ingests_tests_coverage_trace_and_values() {
     assert_eq!(outcome.exit_code, 0);
     assert_eq!(outcome.tests, vec!["demo.ExampleTest#works"]);
     assert_eq!(
+        outcome
+            .test_statuses
+            .get("demo.ExampleTest#works")
+            .map(String::as_str),
+        Some("passed")
+    );
+    assert_eq!(
         store.tests(None, 100).unwrap().items[0]
             .last_status
             .as_deref(),
@@ -37,6 +47,14 @@ fn successful_gradle_run_ingests_tests_coverage_trace_and_values() {
         .unwrap();
     assert_eq!(trace.items.len(), 3);
     assert_eq!(trace.items[1].values["counter"], 1);
+    assert_eq!(outcome.value_hints.len(), 1);
+    assert_eq!(
+        outcome.value_hints[0].path,
+        "src/main/kotlin/demo/Example.kt"
+    );
+    assert_eq!(outcome.value_hints[0].line, 2);
+    assert_eq!(outcome.value_hints[0].label, "values");
+    assert_eq!(outcome.value_hints[0].value["counter"], 1);
     assert_eq!(
         store
             .coverage("src/main/kotlin/demo/Example.kt", None, 100)
@@ -80,6 +98,15 @@ fn unchanged_fast_verification_uses_revision_cache_without_starting_gradle() {
         .with_timeout(Duration::from_secs(10));
 
     let first = verifier.verify(&VerificationRequest::fast()).unwrap();
+    store
+        .upsert_test(&TestRecord {
+            id: "demo.ExampleTest#works".into(),
+            display_name: "demo.ExampleTest#works".into(),
+            module: ":".into(),
+            last_status: Some("failed".into()),
+            last_failure_id: None,
+        })
+        .unwrap();
     let mut samples = Vec::new();
     let mut second = None;
     for _ in 0..20 {
@@ -94,6 +121,13 @@ fn unchanged_fast_verification_uses_revision_cache_without_starting_gradle() {
     assert!(!first.cached);
     assert!(second.cached);
     assert_eq!(first.run_id, second.run_id);
+    assert_eq!(
+        second
+            .test_statuses
+            .get("demo.ExampleTest#works")
+            .map(String::as_str),
+        Some("passed")
+    );
     assert!(
         p95 < Duration::from_millis(250),
         "no-change verify p95 was {p95:?}"
@@ -101,6 +135,162 @@ fn unchanged_fast_verification_uses_revision_cache_without_starting_gradle() {
     assert_eq!(
         fs::read_to_string(fixture.path().join(".gradle/fake-invocations")).unwrap(),
         "x"
+    );
+    assert_eq!(
+        store.tests(None, 100).unwrap().items[0]
+            .last_status
+            .as_deref(),
+        Some("passed")
+    );
+}
+
+#[test]
+fn obsolete_success_cache_is_reexecuted_before_new_editor_evidence_is_published() {
+    let fixture = fixture(false, false);
+    let layout = WorkspaceLayout::new(fixture.path()).unwrap();
+    layout.ensure_state_dir().unwrap();
+    let store = Store::open(&layout.database, RetentionPolicy::default()).unwrap();
+    let verifier = Verifier::new(&layout, &store, artifacts(fixture.path()))
+        .with_timeout(Duration::from_secs(10));
+    let first = verifier.verify(&VerificationRequest::fast()).unwrap();
+    let mut obsolete = serde_json::to_value(&first).unwrap();
+    obsolete
+        .as_object_mut()
+        .unwrap()
+        .remove("evidenceFormatVersion");
+    store
+        .save_verification_cache(
+            &first.revision,
+            &first.run_id,
+            &serde_json::to_vec(&obsolete).unwrap(),
+        )
+        .unwrap();
+
+    let second = verifier.verify(&VerificationRequest::fast()).unwrap();
+
+    assert!(!second.cached);
+    assert_eq!(second.evidence_format_version, 1);
+    assert_eq!(second.value_hints.len(), 1);
+    assert_eq!(
+        fs::read_to_string(fixture.path().join(".gradle/fake-invocations")).unwrap(),
+        "xx"
+    );
+}
+
+#[test]
+fn selected_test_without_worker_evidence_is_never_reported_as_success() {
+    let fixture = fixture(false, false);
+    fs::write(
+        fixture.path().join("gradlew"),
+        "#!/usr/bin/env bash\nset -eu\nexit 0\n",
+    )
+    .unwrap();
+    fs::set_permissions(
+        fixture.path().join("gradlew"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    let layout = WorkspaceLayout::new(fixture.path()).unwrap();
+    layout.ensure_state_dir().unwrap();
+    let store = Store::open(&layout.database, RetentionPolicy::default()).unwrap();
+
+    let outcome = Verifier::new(&layout, &store, artifacts(fixture.path()))
+        .with_timeout(Duration::from_secs(10))
+        .verify(&VerificationRequest {
+            selected_tests: vec!["demo.ExampleTest#works".into()],
+            ..VerificationRequest::fast()
+        })
+        .unwrap();
+
+    assert_eq!(outcome.status, RunStatus::Error);
+    assert_eq!(outcome.exit_code, 3);
+    assert!(outcome.tests.is_empty());
+}
+
+#[test]
+fn unsaved_overlay_is_isolated_cached_and_rebound_to_the_latest_document_version() {
+    let fixture = fixture(false, false);
+    let layout = WorkspaceLayout::new(fixture.path()).unwrap();
+    layout.ensure_state_dir().unwrap();
+    let store = Store::open(&layout.database, RetentionPolicy::default()).unwrap();
+    let verifier = Verifier::new(&layout, &store, artifacts(fixture.path()))
+        .with_timeout(Duration::from_secs(10));
+    verifier.verify(&VerificationRequest::fast()).unwrap();
+    let overlay = |version| OverlayRequest {
+        session_id: "vscode".into(),
+        documents: vec![OverlayDocument {
+            path: "src/main/kotlin/demo/Example.kt".into(),
+            version,
+            content: "package demo\nfun answer() = 2\n".into(),
+        }],
+    };
+
+    let first = verifier
+        .verify(&VerificationRequest {
+            overlay: Some(overlay(7)),
+            ..VerificationRequest::fast()
+        })
+        .unwrap();
+    let second = verifier
+        .verify(&VerificationRequest {
+            overlay: Some(overlay(8)),
+            ..VerificationRequest::fast()
+        })
+        .unwrap();
+
+    assert!(!first.cached);
+    assert!(second.cached);
+    assert_eq!(
+        second.overlay_versions["src/main/kotlin/demo/Example.kt"],
+        8
+    );
+    assert_eq!(first.revision, second.revision);
+    assert_eq!(
+        fs::read_to_string(fixture.path().join("src/main/kotlin/demo/Example.kt")).unwrap(),
+        "package demo\nfun answer() = 1\n"
+    );
+}
+
+#[test]
+fn source_locations_resolve_files_that_exist_only_in_the_editor_overlay() {
+    let fixture = fixture(false, false);
+    let wrapper = fixture.path().join("gradlew");
+    let script = fs::read_to_string(&wrapper)
+        .unwrap()
+        .replace("\"path\":\"Example.kt\"", "\"path\":\"OnlyInEditor.kt\"");
+    fs::write(&wrapper, script).unwrap();
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+    let layout = WorkspaceLayout::new(fixture.path()).unwrap();
+    layout.ensure_state_dir().unwrap();
+    let store = Store::open(&layout.database, RetentionPolicy::default()).unwrap();
+
+    let outcome = Verifier::new(&layout, &store, artifacts(fixture.path()))
+        .with_timeout(Duration::from_secs(10))
+        .verify(&VerificationRequest {
+            overlay: Some(OverlayRequest {
+                session_id: "vscode-new-file".into(),
+                documents: vec![OverlayDocument {
+                    path: "src/main/kotlin/demo/OnlyInEditor.kt".into(),
+                    version: 1,
+                    content: "package demo\nfun editorOnly() = 1\n".into(),
+                }],
+            }),
+            ..VerificationRequest::fast()
+        })
+        .unwrap();
+
+    assert_eq!(outcome.status, RunStatus::Passed);
+    assert_eq!(
+        outcome.value_hints[0].path,
+        "src/main/kotlin/demo/OnlyInEditor.kt"
+    );
+    assert_eq!(
+        store
+            .coverage("src/main/kotlin/demo/OnlyInEditor.kt", None, 100)
+            .unwrap()
+            .items
+            .len(),
+        1
     );
 }
 
@@ -315,6 +505,13 @@ fn failed_test_is_structured_and_full_recording_is_replayable() {
     let outcome = verifier.verify(&VerificationRequest::fast()).unwrap();
     assert_eq!(outcome.status, RunStatus::Failed);
     assert_eq!(outcome.exit_code, 1);
+    assert_eq!(
+        outcome
+            .test_statuses
+            .get("demo.ExampleTest#works")
+            .map(String::as_str),
+        Some("failed")
+    );
     assert!(store.failure(&outcome.failures[0]).unwrap().is_some());
 
     let recording = verifier.record("demo.ExampleTest#works").unwrap();

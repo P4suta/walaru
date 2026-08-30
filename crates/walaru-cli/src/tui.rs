@@ -193,10 +193,7 @@ impl App {
             .get("failure")
             .filter(|failure| !failure.is_null())
             .map(|failure| {
-                let mut lines = vec![
-                    format!("{}", text(failure, "exceptionType")),
-                    text(failure, "message"),
-                ];
+                let mut lines = vec![text(failure, "exceptionType"), text(failure, "message")];
                 if let Some(frames) = failure.get("frames").and_then(Value::as_array) {
                     lines.extend(
                         frames

@@ -53,6 +53,7 @@ test("validates the complete v1 structured envelope", () => {
   assert.throws(() => validateEnvelope(envelope({ status: "mystery" })), /unsupported/);
   assert.throws(() => validateEnvelope(envelope({ workspaceId: "workspace" })), /unsupported/);
   assert.throws(() => validateEnvelope(envelope({ runId: 7 })), /unsupported/);
+  assert.throws(() => validateEnvelope(envelope({ data: [] })), /unsupported/);
   assert.throws(
     () => validateEnvelope(envelope({ diagnostics: [{ code: "x", severity: "fatal", message: "x", details: {} }] })),
     /unsupported/,
@@ -90,4 +91,26 @@ test("rejects structured responses beyond the configured limit", async () => {
     query("/work/project", ["tests"], { spawn: fakeSpawn, maxBytes: 4_096 }),
     /exceeded 4096 bytes/,
   );
+});
+
+test("cancels a shell-free child through AbortSignal and rejects only after close", async () => {
+  let killed = false;
+  const fakeSpawn = () => {
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.kill = () => {
+      killed = true;
+      process.nextTick(() => child.emit("close", null));
+    };
+    return child;
+  };
+  const controller = new AbortController();
+  const result = query("/work/project", ["verify", "--supersede"], {
+    spawn: fakeSpawn,
+    signal: controller.signal,
+  });
+  controller.abort();
+  await assert.rejects(result, (error) => error.name === "AbortError");
+  assert.equal(killed, true);
 });

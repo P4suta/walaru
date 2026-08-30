@@ -78,6 +78,7 @@ function validateEnvelope(envelope) {
     typeof envelope.sessionId !== "string" ||
     !(envelope.runId === null || typeof envelope.runId === "string") ||
     !STATUSES.has(envelope.status) ||
+    !isRecord(envelope.data) ||
     !validDiagnostics(envelope.diagnostics) ||
     !isRecord(capabilities) ||
     !hasExactKeys(capabilities, ["backend", "completeness", "supported", "unavailable"]) ||
@@ -156,6 +157,10 @@ function query(workspace, commandArguments, options = {}) {
   const maxStderrBytes = boundedBytes(options.maxStderrBytes, DEFAULT_MAX_STDERR_BYTES);
   const spawnProcess = options.spawn || spawn;
   return new Promise((resolve, reject) => {
+    if (options.signal?.aborted) {
+      reject(abortError());
+      return;
+    }
     const child = spawnProcess(call.command, call.args, {
       ...call.options,
       cwd: workspace,
@@ -168,6 +173,12 @@ function query(workspace, commandArguments, options = {}) {
     let stderrBytes = 0;
     let exceeded;
     let settled = false;
+    let aborted = false;
+    const abort = () => {
+      aborted = true;
+      child.kill();
+    };
+    options.signal?.addEventListener("abort", abort, { once: true });
     child.stdout.on("data", (chunk) => {
       outputBytes += chunk.length;
       if (outputBytes > call.maxBytes) {
@@ -189,13 +200,16 @@ function query(workspace, commandArguments, options = {}) {
     child.on("error", (error) => {
       if (!settled) {
         settled = true;
+        options.signal?.removeEventListener("abort", abort);
         reject(error);
       }
     });
     child.on("close", (exitCode) => {
       if (settled) return;
       settled = true;
+      options.signal?.removeEventListener("abort", abort);
       try {
+        if (aborted) throw abortError();
         if (exceeded) throw new Error(exceeded);
         resolve({
           exitCode: exitCode ?? 3,
@@ -207,6 +221,12 @@ function query(workspace, commandArguments, options = {}) {
       }
     });
   });
+}
+
+function abortError() {
+  const error = new Error("Walaru request was cancelled");
+  error.name = "AbortError";
+  return error;
 }
 
 function boundedBytes(value, fallback) {

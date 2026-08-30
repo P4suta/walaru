@@ -19,6 +19,11 @@ pub(crate) fn render(
     match command {
         "status" => render_status(output, envelope)?,
         "stop" => writeln!(output, "Daemon shutdown requested.")?,
+        "cancel" => writeln!(
+            output,
+            "Active verification cancelled: {}",
+            yes_no(bool_at(&envelope.data, "/cancelled"))
+        )?,
         "doctor" => render_doctor(output, envelope)?,
         "verify" => render_verify(output, envelope)?,
         "explain" => render_explain(output, envelope)?,
