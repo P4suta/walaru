@@ -205,6 +205,12 @@ fn render_explain(output: &mut impl Write, envelope: &Envelope) -> io::Result<()
         .unwrap_or_default();
     if omitted > 0 {
         writeln!(output, "\n{omitted} additional failures were not recorded.")?;
+        if bool_at(&envelope.data, "/recordingBudgetExhausted") {
+            writeln!(
+                output,
+                "The shared recording time budget elapsed; completed analysis is preserved."
+            )?;
+        }
     }
     Ok(())
 }
@@ -649,5 +655,26 @@ mod tests {
         assert!(output.contains("ExampleTest.kt:9"));
         assert!(output.contains("Why this probably failed"));
         assert!(output.contains("Captured `actual`"));
+    }
+
+    #[test]
+    fn explain_renderer_distinguishes_a_shared_budget_from_the_failure_limit() {
+        let value = envelope(json!({
+            "verification": {"status": "failed"},
+            "explanations": [{
+                "failure": {"testId": "demo.ExampleTest#fails"},
+                "analysis": {"summary": "Assertion failed", "likelyCause": "captured state"},
+                "recording": {"error": "worker timed out"}
+            }],
+            "omittedFailures": 2,
+            "recordingBudgetExhausted": true
+        }));
+        let mut output = Vec::new();
+
+        render(&mut output, "explain", &value).unwrap();
+
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("2 additional failures were not recorded"));
+        assert!(output.contains("shared recording time budget elapsed"));
     }
 }

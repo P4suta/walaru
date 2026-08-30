@@ -11,6 +11,6 @@ val walaruWorkspaceRoot = System.getProperty("walaru.workspaceRoot")
 
 gradle.beforeProject {
     if (walaruWorkspaceRoot == null || rootProject.projectDir.canonicalFile == walaruWorkspaceRoot) {
-        pluginManager.apply(io.github.p4suta.walaru.gradle.WalaruPlugin::class.java)
+        io.github.p4suta.walaru.gradle.WalaruPlugin.bootstrap(this)
     }
 }

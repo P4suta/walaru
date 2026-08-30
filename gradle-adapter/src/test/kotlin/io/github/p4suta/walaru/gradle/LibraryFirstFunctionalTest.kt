@@ -185,6 +185,10 @@ class LibraryFirstFunctionalTest {
                     java
                     id("io.github.p4suta.walaru")
                 }
+                walaru { mode.set("full") }
+                val instrumentedTest = tasks.named<org.gradle.api.tasks.testing.Test>("test")
+                check(walaru.mode.get() == "full")
+                check("-Dwalaru.mode=full" in instrumentedTest.get().jvmArgumentProviders.flatMap { it.asArguments() })
             """.trimIndent(),
         )
         fixture("support/settings.gradle.kts", "rootProject.name = \"support\"")

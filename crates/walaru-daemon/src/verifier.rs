@@ -960,7 +960,7 @@ impl<'a> Verifier<'a> {
                     .collect(),
                 kind,
                 location,
-                values: raw.get("values").cloned().unwrap_or_else(|| json!({})),
+                values: public_event_values(raw.get("values")),
                 observations: raw
                     .get("observations")
                     .cloned()
@@ -1461,6 +1461,50 @@ fn event_kind(value: &str) -> EventKind {
     }
 }
 
+fn public_event_values(raw: Option<&Value>) -> Value {
+    let mut values = raw.cloned().unwrap_or_else(|| json!({}));
+    let Some(object) = values.as_object_mut() else {
+        return values;
+    };
+    let redacted = object
+        .get("redacted")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let sensitive = object
+        .get("sensitive")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if redacted || sensitive {
+        object.insert(
+            "value".into(),
+            Value::String(sensitive_placeholder(object).unwrap_or_else(|| "<redacted>".into())),
+        );
+        object.remove("encoded");
+    }
+    values
+}
+
+fn sensitive_placeholder(values: &serde_json::Map<String, Value>) -> Option<String> {
+    if !values
+        .get("sensitive")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    let bytes = values
+        .get("value")?
+        .as_str()?
+        .strip_prefix("<redacted:file-input ")?
+        .strip_suffix(" bytes>")?
+        .parse::<usize>()
+        .ok()?;
+    if bytes > MAX_EVENT_LINE_BYTES {
+        return None;
+    }
+    Some(format!("<redacted:file-input {bytes} bytes>"))
+}
+
 fn write_replay_inputs(recording: &Recording, path: &Path) -> Result<(), VerifierError> {
     let mut tape = String::new();
     if !recording.inputs.is_empty() {
@@ -1826,5 +1870,37 @@ mod tests {
             assert!(build_input(path), "{path} was not treated as a build input");
         }
         assert!(!build_input("src/main/java/demo/App.java"));
+    }
+
+    #[test]
+    fn public_events_enforce_worker_redaction_markers() {
+        assert_eq!(
+            public_event_values(Some(&json!({
+                "name": "apiToken",
+                "value": "must-not-leak",
+                "redacted": true,
+            }))),
+            json!({"name": "apiToken", "value": "<redacted>", "redacted": true}),
+        );
+        assert_eq!(
+            public_event_values(Some(&json!({
+                "kind": "io.file.readString",
+                "value": "<redacted:file-input 14 bytes>",
+                "encoded": "bXVzdC1ub3QtbGVhaw==",
+                "sensitive": true,
+            }))),
+            json!({
+                "kind": "io.file.readString",
+                "value": "<redacted:file-input 14 bytes>",
+                "sensitive": true,
+            }),
+        );
+        assert_eq!(
+            public_event_values(Some(&json!({
+                "value": "<redacted:token=must-not-leak>",
+                "redacted": true,
+            }))),
+            json!({"value": "<redacted>", "redacted": true}),
+        );
     }
 }

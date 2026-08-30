@@ -53,6 +53,7 @@ class WalaruClientTest {
         assertEquals(18, explanation.analysis().focus().line());
         assertEquals("<redacted>", explanation.analysis().evidence().getFirst().value().textValue());
         assertEquals("rec-1", explanation.recording().id());
+        assertFalse(result.envelope().data().recordingBudgetExhausted());
     }
 
     @Test
@@ -174,7 +175,7 @@ class WalaruClientTest {
                                 + "\"recording\":{\"id\":\"rec-1\",\"testId\":\"demo.SearchTest#fails\","
                                 + "\"revision\":\"rev-1\",\"events\":8,\"capabilities\":{\"backend\":\"jvm\","
                                 + "\"completeness\":\"complete\",\"supported\":[],\"unavailable\":{}}}}],"
-                                + "\"omittedFailures\":0}",
+                                + "\"omittedFailures\":0,\"recordingBudgetExhausted\":false}",
                         "null"));
                 System.exit(1);
             }

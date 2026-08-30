@@ -52,8 +52,8 @@ argument configuration.
 
 ## One-command diagnosis and replay
 
-Build the standalone runtime, then ask Walaru to verify, explain every bounded failure, and record
-the failed tests in full:
+Build the standalone runtime, then ask Walaru to verify, explain bounded failures, and record as many
+failed tests as fit the requested count and shared recording-time budget:
 
 ```bash
 cd /path/to/walaru

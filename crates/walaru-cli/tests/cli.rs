@@ -349,7 +349,7 @@ printf '%s\n' \
 '{"schemaVersion":1,"sequence":0,"threadId":1,"type":"TEST_START","testId":"id","testName":"demo.BinarySearchTest#findsLast","stateHash":"s0"}' \
 '{"schemaVersion":1,"sequence":1,"threadId":1,"type":"CAPTURE","testId":"id","testName":"demo.BinarySearchTest#findsLast","owner":"demo/BinarySearch","method":"find","path":"src/main/java/demo/BinarySearch.java","line":12,"values":{"name":"target","value":9,"redacted":false},"stateHash":"s1"}' \
 '{"schemaVersion":1,"sequence":2,"threadId":1,"type":"CHECKPOINT","testId":"id","testName":"demo.BinarySearchTest#findsLast","owner":"demo/BinarySearch","method":"find","path":"src/main/java/demo/BinarySearch.java","line":18,"values":{"name":"partition","value":{"low":4,"high":4}},"stateHash":"s2"}' \
-'{"schemaVersion":1,"sequence":3,"threadId":1,"type":"CAPTURE","testId":"id","testName":"demo.BinarySearchTest#findsLast","owner":"demo/BinarySearch","method":"find","path":"src/main/java/demo/BinarySearch.java","line":21,"values":{"name":"apiToken","value":"<redacted>","redacted":true},"stateHash":"s3"}' \
+'{"schemaVersion":1,"sequence":3,"threadId":1,"type":"CAPTURE","testId":"id","testName":"demo.BinarySearchTest#findsLast","owner":"demo/BinarySearch","method":"find","path":"src/main/java/demo/BinarySearch.java","line":21,"values":{"name":"apiToken","value":"must-not-leak","redacted":true},"stateHash":"s3"}' \
 '{"schemaVersion":1,"sequence":4,"threadId":1,"type":"TEST_FINISH","testId":"id","testName":"demo.BinarySearchTest#findsLast","status":"failed","failureType":"org.opentest4j.AssertionFailedError","message":"expected: <4> but was: <-1>","frames":["demo.BinarySearchTest.findsLast(BinarySearchTest.java:9)"],"stateHash":"s4"}' > "$event_file"
 exit 1
 "#,

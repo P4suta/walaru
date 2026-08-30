@@ -8,7 +8,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(windows)]
 use std::net::{TcpListener, TcpStream};
@@ -42,6 +42,7 @@ use crate::verifier::{
 };
 
 const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
+const EXPLAIN_RECORDING_BUDGET: Duration = Duration::from_mins(2);
 
 /// Daemon startup, transport, or state error.
 #[derive(Debug, Error)]
@@ -463,11 +464,14 @@ impl Daemon {
             .clamp(1, 20) as usize;
         let artifacts = RuntimeArtifacts::discover();
         let artifact_error = artifacts.as_ref().err().map(ToString::to_string);
-        let verifier = artifacts
-            .ok()
-            .map(|artifacts| Verifier::new(&self.layout, &self.store, artifacts));
+        let recording_budget = TimeBudget::starting_now(EXPLAIN_RECORDING_BUDGET);
+        let mut budget_exhausted = false;
         let mut explanations = Vec::new();
         for failure_id in failure_ids.iter().take(maximum) {
+            if artifacts.is_ok() && recording_budget.remaining().is_none() {
+                budget_exhausted = true;
+                break;
+            }
             let Some(failure) = self.store.failure(failure_id)? else {
                 continue;
             };
@@ -478,7 +482,13 @@ impl Daemon {
                 1024 * 1024,
             )?;
             let analysis = analyze_failure(&failure, &events);
-            let recording = if let Some(verifier) = &verifier {
+            let recording = if let Ok(artifacts) = &artifacts {
+                let Some(remaining) = recording_budget.remaining() else {
+                    budget_exhausted = true;
+                    break;
+                };
+                let verifier = Verifier::new(&self.layout, &self.store, artifacts.clone())
+                    .with_timeout(remaining);
                 match verifier.record(&failure.test_id) {
                     Ok(recording) => json!({
                         "id": recording.id,
@@ -487,7 +497,12 @@ impl Daemon {
                         "events": recording.events.len(),
                         "capabilities": recording.capabilities,
                     }),
-                    Err(error) => json!({"error": error.to_string()}),
+                    Err(error) => {
+                        if matches!(&error, VerifierError::Timeout(_)) {
+                            budget_exhausted = true;
+                        }
+                        json!({"error": error.to_string()})
+                    }
                 }
             } else {
                 json!({
@@ -518,6 +533,14 @@ impl Daemon {
                 ]
             })
         });
+        let mut diagnostics = verification.diagnostics;
+        if budget_exhausted {
+            diagnostics.push(diagnostic(
+                "WALARU_EXPLAIN_BUDGET",
+                "warning",
+                "the bounded recording budget elapsed; omitted failures remain available through failure and record commands",
+            ));
+        }
         let mut envelope = self.envelope(
             verification.status,
             verification.run_id.clone(),
@@ -525,9 +548,10 @@ impl Daemon {
                 "verification": verification.data,
                 "explanations": explanations,
                 "omittedFailures": omitted,
+                "recordingBudgetExhausted": budget_exhausted,
                 "buildFailure": build_failure,
             }),
-            verification.diagnostics,
+            diagnostics,
         );
         envelope.revision = verification.revision;
         envelope.capabilities = verification.capabilities;
@@ -1330,9 +1354,54 @@ struct SocketGuard {
     metadata: PathBuf,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct TimeBudget {
+    deadline: Instant,
+}
+
+impl TimeBudget {
+    fn starting_now(duration: Duration) -> Self {
+        Self::starting_at(Instant::now(), duration)
+    }
+
+    fn starting_at(start: Instant, duration: Duration) -> Self {
+        Self {
+            deadline: start.checked_add(duration).unwrap_or(start),
+        }
+    }
+
+    fn remaining(self) -> Option<Duration> {
+        self.remaining_at(Instant::now())
+    }
+
+    fn remaining_at(self, now: Instant) -> Option<Duration> {
+        self.deadline
+            .checked_duration_since(now)
+            .filter(|remaining| !remaining.is_zero())
+    }
+}
+
 impl Drop for SocketGuard {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.socket);
         let _ = fs::remove_file(&self.metadata);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recording_budget_reports_exact_remaining_time_and_expiry() {
+        let start = Instant::now();
+        let budget = TimeBudget::starting_at(start, Duration::from_millis(10));
+
+        assert_eq!(budget.remaining_at(start), Some(Duration::from_millis(10)));
+        assert_eq!(
+            budget.remaining_at(start + Duration::from_millis(9)),
+            Some(Duration::from_millis(1)),
+        );
+        assert_eq!(budget.remaining_at(start + Duration::from_millis(10)), None);
     }
 }

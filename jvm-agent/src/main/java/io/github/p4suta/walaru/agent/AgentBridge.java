@@ -31,7 +31,7 @@ public final class AgentBridge {
     private static final int MAX_CAPTURED_FILE_BYTES = 1024 * 1024;
     private static final InheritableThreadLocal<TestContext> CURRENT_TEST = new InheritableThreadLocal<>();
     private static final AtomicLong SEQUENCE = new AtomicLong();
-    private static final Set<TestContext> ACTIVE_TESTS = ConcurrentHashMap.newKeySet();
+    private static final Map<String, TestContext> ACTIVE_TESTS = new ConcurrentHashMap<>();
     private static final Set<String> FAST_COVERAGE = ConcurrentHashMap.newKeySet();
     private static final Set<String> FAST_DEPENDENCIES = ConcurrentHashMap.newKeySet();
     private static final Pattern SECRET_MESSAGE = Pattern.compile(
@@ -84,34 +84,50 @@ public final class AgentBridge {
     private static void close() throws IOException {
         EventWriter writer = events;
         events = null;
-        if (writer != null) writer.close();
         InputTape tape = inputTape;
         inputTape = InputTape.disabled();
         replayScheduler = ReplayScheduler.disabled();
-        if (tape != null) tape.close();
-        ACTIVE_TESTS.forEach(TestContext::deactivate);
-        ACTIVE_TESTS.clear();
-        CURRENT_TEST.remove();
+        Throwable firstFailure = null;
+        try {
+            if (writer != null) writer.close();
+        } catch (Throwable failure) {
+            firstFailure = failure;
+        }
+        try {
+            if (tape != null) tape.close();
+        } catch (Throwable failure) {
+            if (firstFailure == null) firstFailure = failure;
+            else firstFailure.addSuppressed(failure);
+        } finally {
+            ACTIVE_TESTS.values().forEach(TestContext::deactivate);
+            ACTIVE_TESTS.clear();
+            CURRENT_TEST.remove();
+        }
+        if (firstFailure instanceof IOException failure) throw failure;
+        if (firstFailure instanceof RuntimeException failure) throw failure;
+        if (firstFailure instanceof Error failure) throw failure;
+        if (firstFailure != null) throw new IOException("cannot close Walaru runtime", firstFailure);
     }
 
     public static void testStarted(String uniqueId, String publicName) {
         String qualifiedName = qualify(publicName);
-        TestContext previous = CURRENT_TEST.get();
-        if (previous != null) {
-            previous.deactivate();
-            ACTIVE_TESTS.remove(previous);
-        }
-        TestContext context = new TestContext(uniqueId, qualifiedName);
-        ACTIVE_TESTS.add(context);
+        TestContext context = new TestContext(uniqueId, qualifiedName, currentTest());
+        TestContext replaced = ACTIVE_TESTS.put(uniqueId, context);
+        if (replaced != null) replaced.deactivate();
         CURRENT_TEST.set(context);
-        emit("TEST_START", Map.of("testId", uniqueId, "testName", qualifiedName));
+        emitForTest(context, "TEST_START", Map.of("testId", uniqueId, "testName", qualifiedName));
     }
 
     public static void testFinished(String uniqueId, String status, Throwable failure) {
-        TestContext context = CURRENT_TEST.get();
+        TestContext context = ACTIVE_TESTS.remove(uniqueId);
+        TestContext local = CURRENT_TEST.get();
+        if (context == null && local != null && Objects.equals(local.uniqueId, uniqueId)) {
+            context = local;
+        }
         try {
             Map<String, Object> fields = new LinkedHashMap<>();
             fields.put("testId", uniqueId);
+            if (context != null) fields.put("testName", context.publicName);
             fields.put("status", status);
             if (failure != null) {
                 fields.put("failureType", failure.getClass().getName());
@@ -130,13 +146,18 @@ public final class AgentBridge {
                 }
                 fields.put("frames", frames);
             }
-            emit("TEST_FINISH", fields);
+            emitForTest(context, "TEST_FINISH", fields);
         } finally {
             if (context != null) {
                 context.deactivate();
-                ACTIVE_TESTS.remove(context);
             }
-            CURRENT_TEST.remove();
+            if (local == context || (local != null && Objects.equals(local.uniqueId, uniqueId))) {
+                if (local.previous != null && local.previous.active()) {
+                    CURRENT_TEST.set(local.previous);
+                } else {
+                    CURRENT_TEST.remove();
+                }
+            }
         }
     }
 
@@ -758,10 +779,14 @@ public final class AgentBridge {
     }
 
     private static void emit(String type, Map<String, ?> supplied) {
-        EventWriter writer = events;
-        if (writer == null) return;
         TestContext test = currentTest();
         if (CURRENT_TEST.get() != null && test == null) return;
+        emitForTest(test, type, supplied);
+    }
+
+    private static void emitForTest(TestContext test, String type, Map<String, ?> supplied) {
+        EventWriter writer = events;
+        if (writer == null) return;
         String threadKey = ReplayScheduler.threadKey();
         replayScheduler.before(type, threadKey);
         try {
@@ -907,11 +932,13 @@ public final class AgentBridge {
     private static final class TestContext {
         private final String uniqueId;
         private final String publicName;
+        private final TestContext previous;
         private final AtomicBoolean active = new AtomicBoolean(true);
 
-        private TestContext(String uniqueId, String publicName) {
+        private TestContext(String uniqueId, String publicName, TestContext previous) {
             this.uniqueId = uniqueId;
             this.publicName = publicName;
+            this.previous = previous;
         }
 
         private boolean active() {

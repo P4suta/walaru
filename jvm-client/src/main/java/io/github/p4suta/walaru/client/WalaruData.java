@@ -57,6 +57,7 @@ public final class WalaruData {
             Verify verification,
             List<Explanation> explanations,
             int omittedFailures,
+            boolean recordingBudgetExhausted,
             BuildFailure buildFailure) {}
 
     public record BuildFailure(String summary, String logFile, List<String> suggestions) {}

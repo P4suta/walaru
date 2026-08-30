@@ -2,6 +2,7 @@ package io.github.p4suta.walaru.agent;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -114,9 +115,21 @@ final class SafeValueTest {
                             classPath,
                             SafeValueProcessProbe.class.getName())
                     .start();
-            assertTrue(process.waitFor(5, TimeUnit.SECONDS));
-            assertEquals(0, process.exitValue());
-            representations.add(new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8));
+            if (!process.waitFor(5, TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+                if (!process.waitFor(5, TimeUnit.SECONDS)) {
+                    process.getInputStream().close();
+                    process.getErrorStream().close();
+                    fail("probe JVM did not terminate after forcible destruction");
+                }
+                fail("probe JVM timed out; stderr: "
+                        + new String(process.getErrorStream().readAllBytes(), StandardCharsets.UTF_8));
+            }
+            String standardError =
+                    new String(process.getErrorStream().readAllBytes(), StandardCharsets.UTF_8);
+            assertEquals(0, process.exitValue(), standardError);
+            representations.add(new String(
+                    process.getInputStream().readAllBytes(), StandardCharsets.UTF_8));
         }
 
         assertEquals(1, representations.size(), representations.toString());

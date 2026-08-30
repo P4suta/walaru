@@ -7,7 +7,9 @@ Lifecycle commands are `status`, `watch`, `tui`, `stop`, and `doctor`. Execution
 `explain` is the human-default compound operation: it verifies the requested revision, loads each
 bounded structured failure, performs deterministic offline analysis, and records up to the requested
 number of failed tests in full. A test failure remains exit `1`; analysis and recording IDs are still
-usable data. It never calls a remote model.
+usable data. Full recordings share a two-minute wall-clock budget; completed explanations are
+preserved, omitted failures are counted, and budget exhaustion is reported in both data and
+diagnostics. It never calls a remote model.
 
 If compilation or build configuration fails before a framework emits a test failure, `explain`
 returns `buildFailure` with a bounded summary, the local worker-log path, and next steps instead of

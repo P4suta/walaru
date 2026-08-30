@@ -4,16 +4,17 @@ import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.provider.ListProperty
 import org.gradle.api.provider.Property
 
-abstract class WalaruExtension {
-    abstract val mode: Property<String>
-    abstract val agentJar: Property<String>
-    abstract val apiJar: Property<String>
-    abstract val eventFile: Property<String>
-    abstract val inputFile: Property<String>
-    abstract val replayInputFile: Property<String>
-    abstract val replayScheduleFile: Property<String>
-    abstract val captureFileIo: Property<Boolean>
-    abstract val selectedTests: ListProperty<String>
-    abstract val modelDirectory: DirectoryProperty
-    abstract val reportDirectory: DirectoryProperty
-}
+/** Typed public view over the classloader-neutral properties used by CLI bootstrap. */
+open class WalaruExtension(
+    val mode: Property<String>,
+    val agentJar: Property<String>,
+    val apiJar: Property<String>,
+    val eventFile: Property<String>,
+    val inputFile: Property<String>,
+    val replayInputFile: Property<String>,
+    val replayScheduleFile: Property<String>,
+    val captureFileIo: Property<Boolean>,
+    val selectedTests: ListProperty<String>,
+    val modelDirectory: DirectoryProperty,
+    val reportDirectory: DirectoryProperty,
+)
