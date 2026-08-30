@@ -84,7 +84,9 @@ impl DaemonCleanup {
 
     fn stop(&mut self) -> std::process::Output {
         let output = stop_daemon(&self.root);
-        self.armed = false;
+        if output.status.success() {
+            self.armed = false;
+        }
         output
     }
 }
