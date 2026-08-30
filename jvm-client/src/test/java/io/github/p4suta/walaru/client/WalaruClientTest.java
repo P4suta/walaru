@@ -7,7 +7,9 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Files;
+import java.nio.file.FileSystemException;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Arrays;
@@ -84,7 +86,8 @@ class WalaruClientTest {
         WalaruClient slow = client(timeoutWorkspace, "slow").timeout(Duration.ofMillis(50)).build();
         WalaruClientException timeout = assertThrows(WalaruClientException.class, slow::status);
         assertTrue(timeout.getMessage().contains("timeout"));
-        Files.delete(timeoutWorkspace);
+        assertFalse(timeout.getMessage().contains("process tree did not terminate"));
+        deleteEventually(timeoutWorkspace, Duration.ofSeconds(2));
         assertFalse(Files.exists(timeoutWorkspace));
         assertThrows(
                 IllegalArgumentException.class,
@@ -127,6 +130,9 @@ class WalaruClientTest {
                 Thread.sleep(10);
             }
             assertTrue(Files.exists(started));
+            ProcessHandle fixture = ProcessHandle.of(Long.parseLong(Files.readString(started)))
+                    .orElseThrow(() -> new AssertionError("fixture process exited before interruption"));
+            assertTrue(fixture.isAlive());
 
             caller.interrupt();
             caller.join(TimeUnit.SECONDS.toMillis(10));
@@ -135,12 +141,26 @@ class WalaruClientTest {
             assertNotNull(failure.get());
             assertTrue(failure.get().getMessage().contains("interrupted"));
             assertTrue(interruptPreserved.get());
+            assertFalse(fixture.isAlive());
             Files.delete(started);
-            Files.delete(interruptedWorkspace);
+            deleteEventually(interruptedWorkspace, Duration.ofSeconds(2));
         } finally {
             if (caller.isAlive()) {
                 caller.interrupt();
                 caller.join(TimeUnit.SECONDS.toMillis(10));
+            }
+        }
+    }
+
+    private static void deleteEventually(Path path, Duration timeout) throws Exception {
+        long deadline = System.nanoTime() + timeout.toNanos();
+        while (true) {
+            try {
+                Files.delete(path);
+                return;
+            } catch (FileSystemException busy) {
+                if (System.nanoTime() >= deadline) throw busy;
+                Thread.sleep(10);
             }
         }
     }
@@ -173,7 +193,10 @@ class WalaruClientTest {
             if (mode.equals("interruptible")) {
                 int workspaceArgument = arguments.indexOf("--workspace");
                 Path fixtureWorkspace = Path.of(arguments.get(workspaceArgument + 1));
-                Files.writeString(fixtureWorkspace.resolve("started"), "ready");
+                Path started = fixtureWorkspace.resolve("started");
+                Path pending = fixtureWorkspace.resolve("started.pending");
+                Files.writeString(pending, Long.toString(ProcessHandle.current().pid()));
+                Files.move(pending, started, StandardCopyOption.ATOMIC_MOVE);
                 Thread.sleep(10_000);
                 return;
             }
