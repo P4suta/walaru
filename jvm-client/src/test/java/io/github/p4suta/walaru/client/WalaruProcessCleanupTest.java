@@ -128,6 +128,10 @@ class WalaruProcessCleanupTest {
         }
 
         private List<FakeHandle> visibleChildren() {
+            // An exited root no longer exposes its former children. This makes the regression
+            // depend on Walaru retaining the child as an additional discovery root; otherwise
+            // the grandchild spawned during shutdown is invisible and remains alive.
+            if (!alive) return List.of();
             List<FakeHandle> visible = new ArrayList<>(children);
             if (normalTerminationRequests > 0 && childSpawnedOnNormalTermination != null) {
                 visible.add(childSpawnedOnNormalTermination);
