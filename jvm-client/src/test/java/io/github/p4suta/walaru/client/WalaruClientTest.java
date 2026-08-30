@@ -86,7 +86,8 @@ class WalaruClientTest {
         WalaruClient slow = client(timeoutWorkspace, "slow").timeout(Duration.ofMillis(50)).build();
         WalaruClientException timeout = assertThrows(WalaruClientException.class, slow::status);
         assertTrue(timeout.getMessage().contains("timeout"));
-        Files.delete(timeoutWorkspace);
+        assertFalse(timeout.getMessage().contains("process tree did not terminate"));
+        deleteEventually(timeoutWorkspace, Duration.ofSeconds(2));
         assertFalse(Files.exists(timeoutWorkspace));
         assertThrows(
                 IllegalArgumentException.class,
