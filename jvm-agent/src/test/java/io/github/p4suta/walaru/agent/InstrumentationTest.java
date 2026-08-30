@@ -6,6 +6,8 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.lang.management.ManagementFactory;
+import java.lang.management.ThreadMXBean;
 import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -386,6 +388,11 @@ final class InstrumentationTest {
                 BytecodeInstrumenter.instrument(originalBytes, "fixture/FastWorkload", AgentMode.FAST));
         Method originalRun = original.getMethod("run", int.class);
         Method instrumentedRun = instrumented.getMethod("run", int.class);
+        ThreadMXBean threadMetrics = ManagementFactory.getThreadMXBean();
+        assertTrue(threadMetrics.isCurrentThreadCpuTimeSupported());
+        if (!threadMetrics.isThreadCpuTimeEnabled()) {
+            threadMetrics.setThreadCpuTimeEnabled(true);
+        }
         Path events = directory.resolve("fast-overhead.jsonl");
         try {
             AgentBridge.resetForTest(events, AgentMode.FAST);
@@ -394,43 +401,43 @@ final class InstrumentationTest {
                 originalRun.invoke(null, 10_000);
                 instrumentedRun.invoke(null, 10_000);
             }
-            long[] baseline = new long[15];
-            long[] observed = new long[15];
+            long[] baseline = new long[16];
+            long[] observed = new long[16];
+            double[] pairedRatios = new double[baseline.length];
             Object expected = null;
             Object actual = null;
             for (int index = 0; index < baseline.length; index++) {
                 if (index % 2 == 0) {
-                    long started = System.nanoTime();
+                    long started = threadMetrics.getCurrentThreadCpuTime();
                     expected = originalRun.invoke(null, 30_000_000);
-                    baseline[index] = System.nanoTime() - started;
-                    started = System.nanoTime();
+                    baseline[index] = threadMetrics.getCurrentThreadCpuTime() - started;
+                    started = threadMetrics.getCurrentThreadCpuTime();
                     actual = instrumentedRun.invoke(null, 30_000_000);
-                    observed[index] = System.nanoTime() - started;
+                    observed[index] = threadMetrics.getCurrentThreadCpuTime() - started;
                 } else {
-                    long started = System.nanoTime();
+                    long started = threadMetrics.getCurrentThreadCpuTime();
                     actual = instrumentedRun.invoke(null, 30_000_000);
-                    observed[index] = System.nanoTime() - started;
-                    started = System.nanoTime();
+                    observed[index] = threadMetrics.getCurrentThreadCpuTime() - started;
+                    started = threadMetrics.getCurrentThreadCpuTime();
                     expected = originalRun.invoke(null, 30_000_000);
-                    baseline[index] = System.nanoTime() - started;
+                    baseline[index] = threadMetrics.getCurrentThreadCpuTime() - started;
                 }
+                pairedRatios[index] = (double) observed[index] / baseline[index];
             }
             AgentBridge.testFinished("fixture.FastWorkloadTest#works", "passed", null);
             assertEquals(expected, actual);
-            Arrays.sort(baseline);
-            Arrays.sort(observed);
-            int stableSampleCount = baseline.length / 3;
-            long baselineStableMean = Arrays.stream(baseline, 0, stableSampleCount).sum()
-                    / stableSampleCount;
-            long observedStableMean = Arrays.stream(observed, 0, stableSampleCount).sum()
-                    / stableSampleCount;
+            Arrays.sort(pairedRatios);
+            double medianRatio = (pairedRatios[pairedRatios.length / 2 - 1]
+                            + pairedRatios[pairedRatios.length / 2])
+                    / 2.0;
             assertTrue(
-                    observedStableMean * 10 <= baselineStableMean * 13,
-                    "fast instrumentation overhead exceeded 30% for stable samples: baseline="
-                            + baselineStableMean
-                            + "ns observed="
-                            + observedStableMean
-                            + "ns");
+                    medianRatio <= 1.30,
+                    "fast instrumentation median paired CPU-time overhead exceeded 30%: ratio="
+                            + medianRatio
+                            + " baseline="
+                            + Arrays.toString(baseline)
+                            + " observed="
+                            + Arrays.toString(observed));
         } finally {
             AgentBridge.closeForTest();
         }
