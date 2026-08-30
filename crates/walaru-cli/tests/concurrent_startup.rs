@@ -3,9 +3,10 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
 use std::sync::{Arc, Barrier};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use tempfile::tempdir;
@@ -32,16 +33,15 @@ fn concurrent_clients_share_one_successful_daemon_cold_start() {
             let barrier = Arc::clone(&barrier);
             thread::spawn(move || {
                 barrier.wait();
-                Command::new(WALARU)
-                    .args([
-                        "--workspace",
-                        root.to_str().unwrap(),
-                        "--format",
-                        "json",
-                        if index % 2 == 0 { "status" } else { "tests" },
-                    ])
-                    .output()
-                    .unwrap()
+                let mut command = Command::new(WALARU);
+                command.args([
+                    "--workspace",
+                    root.to_str().unwrap(),
+                    "--format",
+                    "json",
+                    if index % 2 == 0 { "status" } else { "tests" },
+                ]);
+                bounded_output(command, Duration::from_secs(10))
             })
         })
         .collect::<Vec<_>>();
@@ -96,15 +96,35 @@ impl Drop for DaemonCleanup {
     }
 }
 
-fn stop_daemon(root: &std::path::Path) -> std::process::Output {
-    Command::new(WALARU)
-        .args([
-            "--workspace",
-            root.to_str().unwrap(),
-            "--format",
-            "json",
-            "stop",
-        ])
-        .output()
-        .unwrap()
+fn stop_daemon(root: &std::path::Path) -> Output {
+    let mut command = Command::new(WALARU);
+    command.args([
+        "--workspace",
+        root.to_str().unwrap(),
+        "--format",
+        "json",
+        "stop",
+    ]);
+    bounded_output(command, Duration::from_secs(5))
+}
+
+fn bounded_output(mut command: Command, timeout: Duration) -> Output {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command.spawn().unwrap();
+    let deadline = Instant::now() + timeout;
+    loop {
+        if child.try_wait().unwrap().is_some() {
+            return child.wait_with_output().unwrap();
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let output = child.wait_with_output().unwrap();
+            panic!(
+                "command timed out after {timeout:?}\nstderr: {}\nstdout: {}",
+                String::from_utf8_lossy(&output.stderr),
+                String::from_utf8_lossy(&output.stdout)
+            );
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
 }
