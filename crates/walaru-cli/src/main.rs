@@ -352,6 +352,7 @@ fn ensure_daemon(layout: &WorkspaceLayout) -> Result<(), Box<dyn std::error::Err
         .stderr(Stdio::from(log))
         .spawn()?;
     let deadline = Instant::now() + Duration::from_secs(3);
+    let mut child_status = None;
     while Instant::now() < deadline {
         if layout.socket.exists()
             && layout.daemon_metadata.exists()
@@ -359,10 +360,17 @@ fn ensure_daemon(layout: &WorkspaceLayout) -> Result<(), Box<dyn std::error::Err
         {
             return Ok(());
         }
-        if let Some(status) = child.try_wait()? {
-            return Err(format!("daemon exited during startup with {status}").into());
+        if child_status.is_none() {
+            child_status = child.try_wait()?;
         }
+        // Another client can win the worktree-local bind after this process has spawned its
+        // daemon. The losing daemon exits, but the winner still needs time to open the store and
+        // publish metadata. Keep observing the shared readiness contract until the same deadline
+        // instead of turning that healthy cold-start race into an empty client response.
         thread::sleep(Duration::from_millis(20));
+    }
+    if let Some(status) = child_status {
+        return Err(format!("daemon exited during startup with {status}").into());
     }
     Err(format!("daemon did not create {}", layout.socket.display()).into())
 }
