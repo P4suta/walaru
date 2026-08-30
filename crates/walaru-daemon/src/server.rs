@@ -1260,6 +1260,7 @@ impl DaemonServer {
                 drop(stream);
                 continue;
             }
+            configure_accepted_stream(&stream)?;
             let daemon = Arc::clone(&daemon);
             workers.push(std::thread::spawn(move || {
                 serve_connection(stream, &daemon);
@@ -1489,6 +1490,13 @@ fn set_stream_timeouts(
     tolerate_unsupported_local_timeout(stream.set_write_timeout(write))
 }
 
+fn configure_accepted_stream(stream: &LocalStream) -> io::Result<()> {
+    // Whether an accepted socket inherits O_NONBLOCK from its listener differs by platform.
+    // Connection workers use blocking framed reads with explicit timeouts, so make that contract
+    // portable instead of depending on accept(2) inheritance behavior.
+    stream.set_nonblocking(false)
+}
+
 fn tolerate_unsupported_local_timeout(result: io::Result<()>) -> io::Result<()> {
     match result {
         // Darwin can reject SO_RCVTIMEO/SO_SNDTIMEO for AF_UNIX sockets with EINVAL.
@@ -1655,6 +1663,24 @@ impl Drop for SocketGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn accepted_stream_is_reset_to_blocking_mode() {
+        let (mut server, mut client) = UnixStream::pair().unwrap();
+        server.set_nonblocking(true).unwrap();
+        configure_accepted_stream(&server).unwrap();
+
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            client.write_all(&[42]).unwrap();
+        });
+        let mut byte = [0];
+        server.read_exact(&mut byte).unwrap();
+        writer.join().unwrap();
+
+        assert_eq!(byte, [42]);
+    }
 
     #[test]
     fn recording_budget_reports_exact_remaining_time_and_expiry() {

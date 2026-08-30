@@ -44,7 +44,7 @@ retains Gradle state, restores files when an editor buffer becomes clean, and ha
 so equal-length edits cannot be missed. `--test` may be repeated for exact public test IDs. Without
 an explicit selection, the normal conservative impact policy applies.
 
-A superseding request cancels the active worker and serializes replacement work. The canceled
+A superseding request cancels the active worker and serializes replacement work. The superseded
 request exits `4` with `status: "stale"`, `data.cancelled: true`, and diagnostic
 `WALARU_SUPERSEDED`. `cancel` is idempotent. Successful and failed verification payloads include
 `overlayVersions`, source-linked `problems`, `testStatuses`, and `valueHints`. A value hint links a

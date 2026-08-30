@@ -25,6 +25,7 @@ feedback immediately. Workspace Trust is required before any external binary run
 This source package is not published to the VS Code Marketplace. Build and install it locally:
 
 ```bash
+cd clients/vscode
 npm ci
 npm run package
 code --install-extension ../../dist/walaru-0.1.0.vsix --force
