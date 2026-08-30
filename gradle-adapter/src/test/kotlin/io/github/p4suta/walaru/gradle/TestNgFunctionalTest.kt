@@ -1,5 +1,6 @@
 package io.github.p4suta.walaru.gradle
 
+import com.fasterxml.jackson.databind.ObjectMapper
 import io.github.p4suta.walaru.model.GradleProjectModel
 import org.gradle.testkit.runner.GradleRunner
 import org.junit.jupiter.api.Test
@@ -8,8 +9,10 @@ import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.createDirectories
+import kotlin.io.path.readLines
 import kotlin.io.path.readText
 import kotlin.io.path.writeText
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class TestNgFunctionalTest {
@@ -33,8 +36,12 @@ class TestNgFunctionalTest {
             """
                 package demo;
                 public final class TestNgExample {
-                    @org.testng.annotations.Test public void works() {
-                        org.testng.Assert.assertEquals(2 + 2, 4);
+                    @org.testng.annotations.DataProvider(name = "values")
+                    public Object[][] values() { return new Object[][] {{2}, {4}}; }
+
+                    @org.testng.annotations.Test(dataProvider = "values")
+                    public void works(int value) {
+                        org.testng.Assert.assertTrue(value % 2 == 0);
                     }
                 }
             """.trimIndent(),
@@ -67,6 +74,16 @@ class TestNgFunctionalTest {
         assertTrue(trace.contains("demo.TestNgExample#works"), trace)
         assertTrue(trace.contains("\"type\":\"LINE\""), trace)
         assertTrue(trace.contains("\"type\":\"TEST_FINISH\""), trace)
+
+        val mapper = ObjectMapper()
+        val parsed = events.readLines().filter(String::isNotBlank).map(mapper::readTree)
+        val starts = parsed.filter { it.path("type").asText() == "TEST_START" }
+        val finishes = parsed.filter { it.path("type").asText() == "TEST_FINISH" }
+        val lifecycleIds = starts.map { it.path("testId").asText() }.toSet()
+        assertEquals(2, starts.size)
+        assertEquals(setOf("demo.TestNgExample#works"), starts.map { it.path("testName").asText() }.toSet())
+        assertEquals(2, lifecycleIds.size)
+        assertEquals(lifecycleIds, finishes.map { it.path("testId").asText() }.toSet())
     }
 
     private fun fixture(relative: String, contents: String) {

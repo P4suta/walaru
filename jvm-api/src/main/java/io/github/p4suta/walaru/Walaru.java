@@ -44,14 +44,16 @@ public final class Walaru {
 
     /**
      * Computes and records diagnostic state only while Walaru is actively observing a test.
-     * Runtime exceptions from the diagnostic supplier are ignored, so adding instrumentation does
-     * not change application behavior.
+     * Non-fatal failures from the diagnostic supplier are ignored, so adding instrumentation does
+     * not change application behavior. Serious {@link Error} signals other than assertion failures
+     * are never hidden.
      */
     public static void captureLazy(String name, Supplier<?> diagnosticValue) {
         if (!RuntimeBridge.active() || diagnosticValue == null) return;
         try {
             capture(name, diagnosticValue.get());
-        } catch (RuntimeException ignored) {
+        } catch (Throwable failure) {
+            if (failure instanceof Error error && !(error instanceof AssertionError)) throw error;
             // Diagnostic computation is observational and deliberately fail-open.
         }
     }

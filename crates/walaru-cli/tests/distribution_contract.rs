@@ -66,6 +66,10 @@ fn repository_documents_and_packages_the_supported_contract() {
         assert!(package.contains(library), "package is missing {library}");
     }
     assert!(!package.contains("jvm-agent-0.1.0"));
+    let windows_package = fs::read_to_string(root.join("scripts/package-windows.ps1")).unwrap();
+    assert!(windows_package.starts_with("#Requires -Version 7.0"));
+    let contributing = fs::read_to_string(root.join("CONTRIBUTING.md")).unwrap();
+    assert!(contributing.contains("PowerShell 7"));
 
     let workflow = fs::read_to_string(root.join(".github/workflows/ci.yml")).unwrap();
     for required in ["ubuntu-24.04", "macos-15", "windows-2025", "21", "25"] {

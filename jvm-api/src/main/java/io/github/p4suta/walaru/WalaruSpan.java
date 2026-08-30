@@ -1,6 +1,7 @@
 package io.github.p4suta.walaru;
 
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 /** A fail-open trace span. Instances are created by {@link Walaru#span(String)}. */
 public final class WalaruSpan implements AutoCloseable {
@@ -11,7 +12,7 @@ public final class WalaruSpan implements AutoCloseable {
     private final RuntimeBridge.Caller caller;
     private final long startedNanos;
     private final AtomicBoolean closed = new AtomicBoolean();
-    private volatile Throwable failure;
+    private final AtomicReference<Throwable> failure = new AtomicReference<>();
 
     private WalaruSpan(String id, String name, RuntimeBridge.Caller caller, long startedNanos) {
         this.id = id;
@@ -46,7 +47,7 @@ public final class WalaruSpan implements AutoCloseable {
 
     /** Marks this span as failed. Calling it repeatedly keeps the first failure. */
     public WalaruSpan failed(Throwable cause) {
-        if (id != null && failure == null) failure = cause;
+        if (id != null && cause != null) failure.compareAndSet(null, cause);
         return this;
     }
 
@@ -55,6 +56,6 @@ public final class WalaruSpan implements AutoCloseable {
     public void close() {
         if (id == null || !closed.compareAndSet(false, true)) return;
         long duration = Math.max(0L, System.nanoTime() - startedNanos);
-        RuntimeBridge.spanFinished(id, name, duration, failure, caller);
+        RuntimeBridge.spanFinished(id, name, duration, failure.get(), caller);
     }
 }

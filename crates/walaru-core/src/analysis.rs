@@ -215,11 +215,12 @@ fn actionable(item: &FailureEvidence) -> bool {
 }
 
 fn assertion_mismatch(message: &str) -> Option<(String, String)> {
-    let expected_start = find_ascii_case_insensitive(message, "expected", 0)? + "expected".len();
+    let expected_start =
+        find_ascii_word_case_insensitive(message, "expected", 0)? + "expected".len();
     let (separator, marker) = ["but was", "but found"]
         .into_iter()
         .filter_map(|marker| {
-            find_ascii_case_insensitive(message, marker, expected_start)
+            find_ascii_word_case_insensitive(message, marker, expected_start)
                 .map(|position| (position, marker))
         })
         .min_by_key(|(position, _)| *position)?;
@@ -229,13 +230,28 @@ fn assertion_mismatch(message: &str) -> Option<(String, String)> {
     (!expected.is_empty() && !actual.is_empty()).then_some((expected, actual))
 }
 
-fn find_ascii_case_insensitive(haystack: &str, needle: &str, start: usize) -> Option<usize> {
-    haystack
-        .as_bytes()
-        .get(start..)?
-        .windows(needle.len())
-        .position(|candidate| candidate.eq_ignore_ascii_case(needle.as_bytes()))
-        .map(|position| start + position)
+fn find_ascii_word_case_insensitive(haystack: &str, needle: &str, start: usize) -> Option<usize> {
+    let bytes = haystack.as_bytes();
+    let needle = needle.as_bytes();
+    if needle.is_empty() {
+        return (start <= bytes.len()).then_some(start);
+    }
+    let mut position = start;
+    while position.checked_add(needle.len())? <= bytes.len() {
+        let end = position + needle.len();
+        let before_is_word = position
+            .checked_sub(1)
+            .and_then(|index| bytes.get(index))
+            .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_');
+        let after_is_word = bytes
+            .get(end)
+            .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_');
+        if !before_is_word && !after_is_word && bytes[position..end].eq_ignore_ascii_case(needle) {
+            return Some(position);
+        }
+        position += 1;
+    }
+    None
 }
 
 fn trim_assertion_value(value: &str) -> String {
@@ -341,6 +357,19 @@ mod tests {
         assert_eq!(
             analysis.summary,
             "Assertion failed: expected 4, observed 5."
+        );
+    }
+
+    #[test]
+    fn assertion_parser_skips_expected_inside_unexpected() {
+        let analysis = analyze_failure(
+            &failure("Unexpected exception type thrown ==> expected: <A> but was: <B>"),
+            &[],
+        );
+
+        assert_eq!(
+            analysis.summary,
+            "Assertion failed: expected A, observed B."
         );
     }
 }

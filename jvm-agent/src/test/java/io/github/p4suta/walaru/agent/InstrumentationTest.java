@@ -78,6 +78,21 @@ final class InstrumentationTest {
     }
 
     @Test
+    void stateHashIgnoresRunLocalFrameworkInvocationId() throws Exception {
+        Method stateHash = AgentBridge.class.getDeclaredMethod("stateHash", Map.class);
+        stateHash.setAccessible(true);
+        Map<String, Object> first = new LinkedHashMap<>();
+        first.put("type", "LINE");
+        first.put("testName", "fixture.ParameterizedTest#works");
+        first.put("testId", "testng-random-id-one");
+        first.put("values", Map.of("argument", 7));
+        Map<String, Object> replayed = new LinkedHashMap<>(first);
+        replayed.put("testId", "testng-random-id-two");
+
+        assertEquals(stateHash.invoke(null, first), stateHash.invoke(null, replayed));
+    }
+
+    @Test
     void fullModeEmitsLineCallWriteAndSafeValueEvents() throws Exception {
         Path events = directory.resolve("events.jsonl");
         AgentBridge.resetForTest(events, AgentMode.FULL);

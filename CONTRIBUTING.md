@@ -4,7 +4,7 @@ Thank you for helping build Walaru. Public communication, code, tests, and docum
 
 ## Development setup
 
-Install Rust 1.97, JDK 21+, Node.js 22+, and a POSIX shell on Linux/macOS (PowerShell is supported for Windows packaging). Then run:
+Install Rust 1.97, JDK 21+, Node.js 22+, and a POSIX shell on Linux/macOS (PowerShell 7 is required for Windows packaging). Then run:
 
 ```bash
 export GRADLE_USER_HOME="$PWD/.gradle-user-home"

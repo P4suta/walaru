@@ -831,6 +831,7 @@ public final class AgentBridge {
                         || field.getKey().equals("threadId")
                         || field.getKey().equals("threadKey")
                         || field.getKey().equals("virtualThread")
+                        || field.getKey().equals("testId")
                         || field.getKey().equals("observations")) {
                     continue;
                 }
