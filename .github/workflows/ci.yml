@@ -64,10 +64,14 @@ jobs:
           cache: gradle
       - name: Check JVM projects
         if: runner.os != 'Windows'
-        run: ./gradlew check --no-daemon
+        run: >-
+          ./gradlew check :jvm-api:javadoc :jvm-client:javadoc :jvm-testkit:javadoc
+          generatePomFileForLibraryPublication --no-daemon
       - name: Check JVM projects on Windows
         if: runner.os == 'Windows'
-        run: ./gradlew.bat check --no-daemon
+        run: >-
+          ./gradlew.bat check :jvm-api:javadoc :jvm-client:javadoc :jvm-testkit:javadoc
+          generatePomFileForLibraryPublication --no-daemon
 
   vscode:
     name: VS Code
@@ -297,6 +301,7 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
+      pull-requests: read # Resolve the comparison range for pull-request secret scans.
     steps:
       - name: Check out full history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -305,6 +310,8 @@ jobs:
           persist-credentials: false
       - name: Scan Git history for secrets
         uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
       - name: Scan filesystem
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -337,8 +344,16 @@ jobs:
         env:
           RESULTS: ${{ join(needs.*.result, ' ') }}
         run: |
-          if [[ " $RESULTS " == *" failure "* || " $RESULTS " == *" cancelled "* || " $RESULTS " == *" skipped "* ]]; then
-            echo "CI gate results: $RESULTS" >&2
+          read -r -a results <<< "$RESULTS"
+          if (( ${#results[@]} != 10 )); then
+            echo "Expected 10 CI gate results, received ${#results[@]}: $RESULTS" >&2
             exit 1
           fi
+          for result in "${results[@]}"; do
+            # GitHub can surface matrix setup failures as `abandoned`; accept only success.
+            if [[ "$result" != "success" ]]; then
+              echo "CI gate results: $RESULTS" >&2
+              exit 1
+            fi
+          done
           echo "CI gate results: $RESULTS"

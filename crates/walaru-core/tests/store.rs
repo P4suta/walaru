@@ -47,6 +47,7 @@ fn sqlite_store_uses_wal_and_round_trips_zstd_event_values() {
                     symbol: "demo.example".into(),
                 }),
                 values: json!({"message": repeated}),
+                observations: json!({}),
                 state_hash: "state-a".into(),
                 output_index: 0,
             },
@@ -268,6 +269,7 @@ fn simple_event(id: &str, sequence: u64) -> Event {
         kind: EventKind::Line,
         location: None,
         values: json!({"sequence": sequence}),
+        observations: json!({}),
         state_hash: format!("state-{sequence}"),
         output_index: 0,
     }

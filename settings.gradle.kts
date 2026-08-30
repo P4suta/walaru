@@ -13,6 +13,9 @@ dependencyResolutionManagement {
 rootProject.name = "walaru"
 
 include(
+    "jvm-api",
+    "jvm-client",
+    "jvm-testkit",
     "jvm-model",
     "jvm-agent",
     "jvm-runner",

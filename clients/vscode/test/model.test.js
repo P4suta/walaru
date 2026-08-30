@@ -104,9 +104,18 @@ test("formats human output instead of dumping JSON", () => {
         message: "expected 1",
         frames: ["Test.kt:9"],
       },
+      analysis: {
+        summary: "Assertion failed: expected 1, observed 2.",
+        likelyCause: "Captured `actual` with value 2 immediately preceded the failure.",
+        focus: { path: "src/test/kotlin/Test.kt", line: 9 },
+        evidence: [{ label: "Captured `actual`", value: 2 }],
+        suggestions: ["Inspect the focused source line."],
+      },
     }),
   );
   assert.match(output, /java\.lang\.AssertionError/);
   assert.match(output, /expected 1/);
+  assert.match(output, /Why this probably failed/);
+  assert.match(output, /Captured `actual`/);
   assert.doesNotMatch(output, /\"failure\"/);
 });

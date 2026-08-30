@@ -474,6 +474,39 @@ impl Store {
         self.events_matching(run_id, None, cursor, limit, max_bytes)
     }
 
+    /// Reads the most recent events for one test in chronological order.
+    pub fn recent_test_events(
+        &self,
+        run_id: &str,
+        test_id: &str,
+        limit: usize,
+        max_bytes: usize,
+    ) -> Result<Vec<Event>, StoreError> {
+        let fetch_limit =
+            i64::try_from(limit.max(1)).map_err(|_| StoreError::IntegerRange(u64::MAX))?;
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT payload_zstd FROM events
+             WHERE run_id = ?1 AND test_id = ?2
+             ORDER BY sequence DESC LIMIT ?3",
+        )?;
+        let rows = statement.query_map(params![run_id, test_id, fetch_limit], |row| {
+            row.get::<_, Vec<u8>>(0)
+        })?;
+        let mut events = Vec::new();
+        let mut bytes = 0_usize;
+        for row in rows {
+            let json = zstd::stream::decode_all(row?.as_slice())?;
+            if !events.is_empty() && bytes.saturating_add(json.len()) > max_bytes {
+                break;
+            }
+            bytes = bytes.saturating_add(json.len());
+            events.push(serde_json::from_slice(&json)?);
+        }
+        events.reverse();
+        Ok(events)
+    }
+
     fn events_matching(
         &self,
         run_id: &str,

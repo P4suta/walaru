@@ -29,6 +29,20 @@ if [[ ! -x "$binary" ]]; then
   echo "package is missing bin/walaru" >&2
   exit 2
 fi
+for library in walaru-api.jar walaru-client.jar walaru-testkit.jar walaru-agent.jar; do
+  if [[ ! -f "$bundle_root/lib/$library" ]]; then
+    echo "package is missing lib/$library" >&2
+    exit 2
+  fi
+done
+if ! jar tf "$bundle_root/lib/walaru-api.jar" | grep -F 'io/github/p4suta/walaru/Walaru.class' >/dev/null; then
+  echo "walaru-api.jar does not contain the public API" >&2
+  exit 2
+fi
+if ! jar tf "$bundle_root/lib/walaru-client.jar" | grep -F 'io/github/p4suta/walaru/client/WalaruClient.class' >/dev/null; then
+  echo "walaru-client.jar does not contain the typed client" >&2
+  exit 2
+fi
 
 smoke_workspace="$temporary_root/workspace"
 mkdir -p "$smoke_workspace"

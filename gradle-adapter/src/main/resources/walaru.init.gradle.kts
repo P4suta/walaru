@@ -6,6 +6,11 @@ initscript {
     }
 }
 
+val walaruWorkspaceRoot = System.getProperty("walaru.workspaceRoot")
+    ?.let { java.io.File(it).canonicalFile }
+
 gradle.beforeProject {
-    pluginManager.apply(io.github.p4suta.walaru.gradle.WalaruPlugin::class.java)
+    if (walaruWorkspaceRoot == null || rootProject.projectDir.canonicalFile == walaruWorkspaceRoot) {
+        io.github.p4suta.walaru.gradle.WalaruPlugin.bootstrap(this)
+    }
 }

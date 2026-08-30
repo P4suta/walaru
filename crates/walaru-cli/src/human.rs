@@ -21,6 +21,7 @@ pub(crate) fn render(
         "stop" => writeln!(output, "Daemon shutdown requested.")?,
         "doctor" => render_doctor(output, envelope)?,
         "verify" => render_verify(output, envelope)?,
+        "explain" => render_explain(output, envelope)?,
         "tests" => render_tests(output, envelope)?,
         "failure" => render_failure(output, envelope)?,
         "impact" => render_impact(output, envelope)?,
@@ -124,6 +125,96 @@ fn render_verify(output: &mut impl Write, envelope: &Envelope) -> io::Result<()>
     Ok(())
 }
 
+fn render_explain(output: &mut impl Write, envelope: &Envelope) -> io::Result<()> {
+    let verification = envelope.data.get("verification").unwrap_or(&Value::Null);
+    writeln!(
+        output,
+        "Verification: {}",
+        string_at(verification, "/status")
+    )?;
+    if let Some(run_id) = &envelope.run_id {
+        writeln!(output, "Run:          {run_id}")?;
+    }
+    let explanations = envelope
+        .data
+        .get("explanations")
+        .and_then(Value::as_array)
+        .map_or(&[][..], Vec::as_slice);
+    if explanations.is_empty() {
+        if let Some(build) = envelope
+            .data
+            .get("buildFailure")
+            .filter(|value| !value.is_null())
+        {
+            writeln!(output, "{}", string_at(build, "/summary"))?;
+            if let Some(log) = build.get("logFile").and_then(Value::as_str) {
+                writeln!(output, "Worker log:    {log}")?;
+            }
+            if let Some(suggestions) = build.get("suggestions").and_then(Value::as_array) {
+                writeln!(output, "Next steps:")?;
+                for suggestion in suggestions {
+                    writeln!(output, "  - {}", suggestion.as_str().unwrap_or("-"))?;
+                }
+            }
+            return Ok(());
+        }
+        return writeln!(output, "No failed test produced explainable evidence.");
+    }
+    for explanation in explanations {
+        let failure = explanation.get("failure").unwrap_or(&Value::Null);
+        let analysis = explanation.get("analysis").unwrap_or(&Value::Null);
+        let recording = explanation.get("recording").unwrap_or(&Value::Null);
+        writeln!(output)?;
+        writeln!(output, "{}", string_at(failure, "/testId"))?;
+        writeln!(output, "  {}", string_at(analysis, "/summary"))?;
+        writeln!(output, "  Likely: {}", string_at(analysis, "/likelyCause"))?;
+        if let Some(focus) = analysis.get("focus").filter(|value| !value.is_null()) {
+            writeln!(output, "  Focus:  {}", location(Some(focus)))?;
+        }
+        if let Some(recording_id) = recording.get("id").and_then(Value::as_str) {
+            writeln!(
+                output,
+                "  Full recording: {recording_id} ({} events, {})",
+                recording
+                    .get("events")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default(),
+                string_at(recording, "/capabilities/completeness")
+            )?;
+        } else if let Some(error) = recording.get("error").and_then(Value::as_str) {
+            writeln!(output, "  Full recording unavailable: {error}")?;
+        }
+        if let Some(evidence) = analysis.get("evidence").and_then(Value::as_array) {
+            for item in evidence.iter().take(5) {
+                let value = item
+                    .get("value")
+                    .map_or_else(|| "-".into(), Value::to_string);
+                writeln!(
+                    output,
+                    "    {} = {}",
+                    string_at(item, "/label"),
+                    clipped(&value, 100)
+                )?;
+            }
+        }
+    }
+    let omitted = envelope
+        .data
+        .get("omittedFailures")
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    if omitted > 0 {
+        writeln!(output, "\n{omitted} additional failures were not recorded.")?;
+        if bool_at(&envelope.data, "/recordingBudgetExhausted") {
+            writeln!(
+                output,
+                "The shared recording time budget elapsed; completed analysis is preserved."
+            )?;
+        }
+    }
+    Ok(())
+}
+
 fn render_tests(output: &mut impl Write, envelope: &Envelope) -> io::Result<()> {
     let tests = envelope
         .data
@@ -164,11 +255,53 @@ fn render_failure(output: &mut impl Write, envelope: &Envelope) -> io::Result<()
     if let Some(event_id) = failure.get("eventId").and_then(Value::as_str) {
         writeln!(output, "Event:   {event_id}")?;
     }
+    if let Some(analysis) = envelope
+        .data
+        .get("analysis")
+        .filter(|value| !value.is_null())
+    {
+        writeln!(output)?;
+        writeln!(output, "Why this probably failed")?;
+        writeln!(output, "  {}", string_at(analysis, "/summary"))?;
+        writeln!(
+            output,
+            "  Evidence: {}",
+            string_at(analysis, "/likelyCause")
+        )?;
+        if let Some(focus) = analysis.get("focus").filter(|value| !value.is_null()) {
+            writeln!(output, "  Focus:    {}", location(Some(focus)))?;
+        }
+        if let Some(evidence) = analysis.get("evidence").and_then(Value::as_array) {
+            writeln!(output)?;
+            writeln!(output, "Relevant state:")?;
+            for item in evidence.iter().take(7) {
+                let rendered = item
+                    .get("value")
+                    .map_or_else(|| "-".into(), Value::to_string);
+                writeln!(
+                    output,
+                    "  {} = {}",
+                    string_at(item, "/label"),
+                    clipped(&rendered, 120)
+                )?;
+            }
+        }
+        if let Some(suggestions) = analysis.get("suggestions").and_then(Value::as_array) {
+            writeln!(output)?;
+            writeln!(output, "Try next:")?;
+            for suggestion in suggestions.iter().filter_map(Value::as_str).take(4) {
+                writeln!(output, "  - {suggestion}")?;
+            }
+        }
+    }
     if let Some(frames) = failure.get("frames").and_then(Value::as_array) {
         writeln!(output)?;
-        writeln!(output, "Stack:")?;
-        for frame in frames {
+        writeln!(output, "Top stack frames:")?;
+        for frame in frames.iter().take(8) {
             writeln!(output, "  {}", frame.as_str().unwrap_or("?"))?;
+        }
+        if frames.len() > 8 {
+            writeln!(output, "  … {} more", frames.len() - 8)?;
         }
     }
     Ok(())
@@ -267,7 +400,16 @@ fn render_values(output: &mut impl Write, envelope: &Envelope) -> io::Result<()>
         output,
         envelope.data.get("values").unwrap_or(&Value::Null),
         2,
-    )
+    )?;
+    if let Some(observations) = envelope
+        .data
+        .get("observations")
+        .filter(|value| value.as_object().is_some_and(|object| !object.is_empty()))
+    {
+        writeln!(output, "Observations:")?;
+        render_json(output, observations, 2)?;
+    }
+    Ok(())
 }
 
 fn render_record(output: &mut impl Write, envelope: &Envelope) -> io::Result<()> {
@@ -498,6 +640,12 @@ mod tests {
             "message": "expected 1",
             "eventId": "evt-1",
             "frames": ["ExampleTest.kt:9"]
+        }, "analysis": {
+            "summary": "Assertion failed: expected 1, observed 2.",
+            "likelyCause": "Captured `actual` with value 2 immediately preceded the failure.",
+            "focus": {"path": "src/test/kotlin/ExampleTest.kt", "line": 9},
+            "evidence": [{"label": "Captured `actual`", "value": 2}],
+            "suggestions": ["Inspect the focused source line."]
         }}));
         let mut output = Vec::new();
         render(&mut output, "failure", &value).unwrap();
@@ -505,5 +653,28 @@ mod tests {
         assert!(output.contains("java.lang.AssertionError"));
         assert!(output.contains("expected 1"));
         assert!(output.contains("ExampleTest.kt:9"));
+        assert!(output.contains("Why this probably failed"));
+        assert!(output.contains("Captured `actual`"));
+    }
+
+    #[test]
+    fn explain_renderer_distinguishes_a_shared_budget_from_the_failure_limit() {
+        let value = envelope(json!({
+            "verification": {"status": "failed"},
+            "explanations": [{
+                "failure": {"testId": "demo.ExampleTest#fails"},
+                "analysis": {"summary": "Assertion failed", "likelyCause": "captured state"},
+                "recording": {"error": "worker timed out"}
+            }],
+            "omittedFailures": 2,
+            "recordingBudgetExhausted": true
+        }));
+        let mut output = Vec::new();
+
+        render(&mut output, "explain", &value).unwrap();
+
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("2 additional failures were not recorded"));
+        assert!(output.contains("shared recording time budget elapsed"));
     }
 }

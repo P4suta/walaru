@@ -29,11 +29,14 @@ bundle_root="$temporary_root/$archive_name"
 
 export GRADLE_USER_HOME="${GRADLE_USER_HOME:-$repository_root/.gradle-user-home}"
 cargo build --release -p walaru-cli
-./gradlew :jvm-agent:fatJar :jvm-runner:fatJar :gradle-adapter:fatJar --no-daemon
+./gradlew :jvm-api:jar :jvm-client:fatJar :jvm-testkit:jar :jvm-agent:fatJar :jvm-runner:fatJar :gradle-adapter:fatJar --no-daemon
 
 install -m755 -d "$bundle_root/bin" "$bundle_root/lib" "$bundle_root/share/walaru"
 install -m755 target/release/walaru "$bundle_root/bin/walaru"
 install -m644 "jvm-agent/build/libs/jvm-agent-${workspace_version}-all.jar" "$bundle_root/lib/walaru-agent.jar"
+install -m644 "jvm-api/build/libs/walaru-api-${workspace_version}.jar" "$bundle_root/lib/walaru-api.jar"
+install -m644 "jvm-client/build/libs/walaru-client-${workspace_version}-all.jar" "$bundle_root/lib/walaru-client.jar"
+install -m644 "jvm-testkit/build/libs/walaru-testkit-${workspace_version}.jar" "$bundle_root/lib/walaru-testkit.jar"
 install -m644 "jvm-runner/build/libs/jvm-runner-${workspace_version}-all.jar" "$bundle_root/lib/walaru-runner.jar"
 install -m644 "gradle-adapter/build/libs/gradle-adapter-${workspace_version}-all.jar" "$bundle_root/lib/walaru-gradle-adapter.jar"
 install -m644 gradle/walaru.init.gradle.kts "$bundle_root/share/walaru/walaru.init.gradle.kts"
@@ -41,6 +44,10 @@ install -m644 LICENSE-MIT LICENSE-APACHE "$bundle_root"
 install -m644 README.md "$bundle_root/README.md"
 cp -R docs "$bundle_root/docs"
 cp -R schemas "$bundle_root/schemas"
+while IFS= read -r -d '' source; do
+  mkdir -p "$(dirname "$bundle_root/$source")"
+  install -m644 "$source" "$bundle_root/$source"
+done < <(find examples -type f ! -path '*/build/*' ! -path '*/.gradle/*' -print0)
 mkdir -p "$bundle_root/skills" "$bundle_root/clients"
 cp -R skills/walaru "$bundle_root/skills/walaru"
 mkdir -p "$bundle_root/clients/vscode/media"

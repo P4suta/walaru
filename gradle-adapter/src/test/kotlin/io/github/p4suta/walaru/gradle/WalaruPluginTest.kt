@@ -14,8 +14,31 @@ class WalaruPluginTest {
 
         assertTrue("walaruModel" in project.tasks.names)
         assertTrue("walaruVerify" in project.tasks.names)
+        assertTrue("walaruRuntime" in project.tasks.names)
+        assertTrue("walaruReport" in project.tasks.names)
+        assertTrue("walaruExplain" in project.tasks.names)
+        val javadoc = project.tasks.getByName("javadoc")
+        assertTrue(
+            project.tasks.getByName("walaruRuntime") in javadoc.taskDependencies.getDependencies(javadoc),
+        )
         assertEquals("fast", project.extensions.getByType(WalaruExtension::class.java).mode.get())
         assertEquals(false, project.extensions.getByType(WalaruExtension::class.java).captureFileIo.get())
+    }
+
+    @Test
+    fun `CLI bootstrap composes with the public typed extension`() {
+        val project = ProjectBuilder.builder().build()
+        project.pluginManager.apply("java")
+        val plugin = WalaruPlugin()
+
+        WalaruPlugin.bootstrap(project)
+        plugin.apply(project)
+        project.extensions.getByType(WalaruExtension::class.java).mode.set("full")
+
+        assertTrue(project.extensions.findByName("walaru") is WalaruExtension)
+        assertEquals("full", project.extensions.getByType(WalaruExtension::class.java).mode.get())
+        assertEquals(1, project.tasks.names.count { it == "walaruRuntime" })
+        assertEquals(1, project.tasks.names.count { it == "walaruVerify" })
     }
 
     @Test

@@ -11,4 +11,5 @@ node --test clients/vscode/test/*.test.js
 node clients/vscode/scripts/validate-manifest.mjs
 
 export GRADLE_USER_HOME="${GRADLE_USER_HOME:-$repository_root/.gradle-user-home}"
-./gradlew check --no-daemon
+./gradlew check :jvm-api:javadoc :jvm-client:javadoc :jvm-testkit:javadoc \
+  generatePomFileForLibraryPublication --no-daemon

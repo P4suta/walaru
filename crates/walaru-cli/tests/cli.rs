@@ -16,8 +16,8 @@ fn help_exposes_the_frozen_command_surface() {
     assert!(output.status.success());
     let help = String::from_utf8(output.stdout).unwrap();
     for command in [
-        "status", "watch", "tui", "stop", "doctor", "verify", "tests", "failure", "impact",
-        "coverage", "trace", "values", "record", "replay", "reverse",
+        "status", "watch", "tui", "stop", "doctor", "verify", "explain", "tests", "failure",
+        "impact", "coverage", "trace", "values", "record", "replay", "reverse",
     ] {
         assert!(help.contains(command), "missing `{command}` in:\n{help}");
     }
@@ -314,6 +314,132 @@ printf '%s\n' \
     let envelope: Value = serde_json::from_slice(&reversed.stdout).unwrap();
     assert_eq!(envelope["data"]["verified"], true);
     assert_eq!(envelope["data"]["event"]["location"]["line"], 2);
+
+    let stopped = run(&["stop"]);
+    assert_eq!(stopped.status.code(), Some(0));
+}
+
+#[test]
+fn explain_verifies_diagnoses_redacts_and_records_a_failure_in_one_command() {
+    let directory = tempdir().unwrap();
+    fs::create_dir_all(directory.path().join("src/main/java/demo")).unwrap();
+    fs::write(
+        directory
+            .path()
+            .join("src/main/java/demo/BinarySearch.java"),
+        "package demo; public final class BinarySearch {}\n",
+    )
+    .unwrap();
+    fs::write(
+        directory.path().join("settings.gradle.kts"),
+        "rootProject.name=\"cli-explain\"",
+    )
+    .unwrap();
+    let wrapper = directory.path().join("gradlew");
+    fs::write(
+        &wrapper,
+        r#"#!/usr/bin/env bash
+set -eu
+event_file=""
+for argument in "$@"; do
+  case "$argument" in -Dwalaru.eventFile=*) event_file="${argument#*=}" ;; esac
+done
+mkdir -p "$(dirname "$event_file")"
+printf '%s\n' \
+'{"schemaVersion":1,"sequence":0,"threadId":1,"type":"TEST_START","testId":"id","testName":"demo.BinarySearchTest#findsLast","stateHash":"s0"}' \
+'{"schemaVersion":1,"sequence":1,"threadId":1,"type":"CAPTURE","testId":"id","testName":"demo.BinarySearchTest#findsLast","owner":"demo/BinarySearch","method":"find","path":"src/main/java/demo/BinarySearch.java","line":12,"values":{"name":"target","value":9,"redacted":false},"stateHash":"s1"}' \
+'{"schemaVersion":1,"sequence":2,"threadId":1,"type":"CHECKPOINT","testId":"id","testName":"demo.BinarySearchTest#findsLast","owner":"demo/BinarySearch","method":"find","path":"src/main/java/demo/BinarySearch.java","line":18,"values":{"name":"partition","value":{"low":4,"high":4}},"stateHash":"s2"}' \
+'{"schemaVersion":1,"sequence":3,"threadId":1,"type":"CAPTURE","testId":"id","testName":"demo.BinarySearchTest#findsLast","owner":"demo/BinarySearch","method":"find","path":"src/main/java/demo/BinarySearch.java","line":21,"values":{"name":"apiToken","value":"must-not-leak","redacted":true},"stateHash":"s3"}' \
+'{"schemaVersion":1,"sequence":4,"threadId":1,"type":"TEST_FINISH","testId":"id","testName":"demo.BinarySearchTest#findsLast","status":"failed","failureType":"org.opentest4j.AssertionFailedError","message":"expected: <4> but was: <-1>","frames":["demo.BinarySearchTest.findsLast(BinarySearchTest.java:9)"],"stateHash":"s4"}' > "$event_file"
+exit 1
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+    for artifact in ["adapter.jar", "agent.jar", "init.gradle.kts"] {
+        fs::write(directory.path().join(artifact), "fixture").unwrap();
+    }
+    let run = |command: &[&str]| {
+        let mut process = Command::new(WALARU);
+        process.args(["--workspace", directory.path().to_str().unwrap()]);
+        process.args(command);
+        for (name, file) in [
+            ("WALARU_ADAPTER_JAR", "adapter.jar"),
+            ("WALARU_AGENT_JAR", "agent.jar"),
+            ("WALARU_INIT_SCRIPT", "init.gradle.kts"),
+        ] {
+            process.env(name, directory.path().join(file));
+        }
+        process.output().unwrap()
+    };
+
+    let explained = run(&["explain", "--max-failures", "1"]);
+    assert_eq!(
+        explained.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&explained.stderr)
+    );
+    let envelope: Value = serde_json::from_slice(&explained.stdout).unwrap();
+    assert_eq!(envelope["status"], "failure");
+    assert_eq!(envelope["data"]["verification"]["status"], "failed");
+    assert_eq!(
+        envelope["data"]["explanations"][0]["failure"]["testId"],
+        "demo.BinarySearchTest#findsLast"
+    );
+    assert_eq!(
+        envelope["data"]["explanations"][0]["analysis"]["focus"]["line"],
+        18
+    );
+    assert!(
+        envelope["data"]["explanations"][0]["analysis"]["summary"]
+            .as_str()
+            .unwrap()
+            .contains("expected 4, observed -1")
+    );
+    assert!(
+        envelope["data"]["explanations"][0]["recording"]["id"]
+            .as_str()
+            .unwrap()
+            .starts_with("rec-")
+    );
+    let rendered = String::from_utf8(explained.stdout).unwrap();
+    assert!(rendered.contains("<redacted>"));
+    assert!(!rendered.contains("must-not-leak"));
+
+    let human = run(&["--format", "human", "explain", "--max-failures", "1"]);
+    assert_eq!(human.status.code(), Some(1));
+    let human = String::from_utf8(human.stdout).unwrap();
+    assert!(human.contains("Assertion failed: expected 4, observed -1."));
+    assert!(human.contains("Full recording: rec-"));
+    assert!(human.contains("src/main/java/demo/BinarySearch.java:18"));
+
+    fs::write(
+        &wrapper,
+        "#!/usr/bin/env bash\nprintf 'error: cannot resolve symbol\\n' >&2\nexit 1\n",
+    )
+    .unwrap();
+    let build_failure = run(&["explain", "--max-failures", "1"]);
+    assert_eq!(build_failure.status.code(), Some(1));
+    let envelope: Value = serde_json::from_slice(&build_failure.stdout).unwrap();
+    assert!(
+        envelope["data"]["explanations"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        envelope["data"]["buildFailure"]["summary"]
+            .as_str()
+            .unwrap()
+            .contains("before a structured test failure")
+    );
+    assert!(
+        envelope["data"]["buildFailure"]["logFile"]
+            .as_str()
+            .unwrap()
+            .ends_with("worker.log")
+    );
 
     let stopped = run(&["stop"]);
     assert_eq!(stopped.status.code(), Some(0));

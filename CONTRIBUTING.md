@@ -4,7 +4,7 @@ Thank you for helping build Walaru. Public communication, code, tests, and docum
 
 ## Development setup
 
-Install Rust 1.97, JDK 21+, Node.js 22+, and a POSIX shell on Linux/macOS (PowerShell is supported for Windows packaging). Then run:
+Install Rust 1.97, JDK 21+, Node.js 22+, and a POSIX shell on Linux/macOS (PowerShell 7 is required for Windows packaging). Then run:
 
 ```bash
 export GRADLE_USER_HOME="$PWD/.gradle-user-home"
@@ -33,6 +33,8 @@ Important contract areas are:
 - JSON schema, protobuf round trips, IDs, exit codes, pagination, and response bounds.
 - SQLite WAL recovery, retention, impact widening, coverage, failures, and traces.
 - ASM instrumentation, hostile values, redaction, Kotlin source maps, coroutines, TestNG, Gradle, and Maven.
+- Zero-dependency API no-agent behavior, explicit captures, async context restoration, generated
+  reports, ServiceLoader discovery, typed client argv, and publication metadata.
 - Deterministic inputs, scheduling, fresh-JVM replay, reverse targets, and capability failures.
 - TUI state/input/rendering and VS Code multi-root/trust/argv/size behavior.
 - Cross-platform packages, checksums, `doctor`, and repository security policy.

@@ -149,6 +149,10 @@ fn fresh_reexecution_must_match_every_observable_event_through_the_target() {
 
     verify_replayed_prefix(&recording, &replayed, &target.id).unwrap();
 
+    let mut differently_timed = replayed.clone();
+    differently_timed[1].observations = json!({"durationNanos": 999});
+    verify_replayed_prefix(&recording, &differently_timed, &target.id).unwrap();
+
     let mut diverged = replayed;
     diverged[1].values = json!({"counter": 99});
     let error = verify_replayed_prefix(&recording, &diverged, &target.id).unwrap_err();
@@ -388,6 +392,7 @@ fn event(identity: &EventIdentity, kind: EventKind, line: u32, values: Value) ->
             symbol: "demo.example".into(),
         }),
         values,
+        observations: json!({}),
         state_hash: format!("state-{line}"),
         output_index: 0,
     }
