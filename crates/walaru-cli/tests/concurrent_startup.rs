@@ -2,6 +2,7 @@
 
 use std::collections::BTreeSet;
 use std::fs;
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, Barrier};
 use std::thread;
@@ -23,6 +24,7 @@ fn concurrent_clients_share_one_successful_daemon_cold_start() {
     .unwrap();
 
     let root = directory.path().to_path_buf();
+    let mut cleanup = DaemonCleanup::new(root.clone());
     let barrier = Arc::new(Barrier::new(CLIENTS));
     let clients = (0..CLIENTS)
         .map(|index| {
@@ -65,7 +67,37 @@ fn concurrent_clients_share_one_successful_daemon_cold_start() {
         "concurrent clients must all observe the same daemon session"
     );
 
-    let stopped = Command::new(WALARU)
+    let stopped = cleanup.stop();
+    assert_eq!(stopped.status.code(), Some(0));
+}
+
+struct DaemonCleanup {
+    root: PathBuf,
+    armed: bool,
+}
+
+impl DaemonCleanup {
+    fn new(root: PathBuf) -> Self {
+        Self { root, armed: true }
+    }
+
+    fn stop(&mut self) -> std::process::Output {
+        let output = stop_daemon(&self.root);
+        self.armed = false;
+        output
+    }
+}
+
+impl Drop for DaemonCleanup {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = stop_daemon(&self.root);
+        }
+    }
+}
+
+fn stop_daemon(root: &std::path::Path) -> std::process::Output {
+    Command::new(WALARU)
         .args([
             "--workspace",
             root.to_str().unwrap(),
@@ -74,6 +106,5 @@ fn concurrent_clients_share_one_successful_daemon_cold_start() {
             "stop",
         ])
         .output()
-        .unwrap();
-    assert_eq!(stopped.status.code(), Some(0));
+        .unwrap()
 }

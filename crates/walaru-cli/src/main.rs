@@ -404,18 +404,37 @@ struct StartupLock {
 
 impl StartupLock {
     fn try_acquire(path: &Path) -> io::Result<Option<Self>> {
-        let file = OpenOptions::new()
+        let file = match OpenOptions::new()
             .create(true)
             .truncate(false)
             .read(true)
             .write(true)
-            .open(path)?;
+            .open(path)
+        {
+            Ok(file) => file,
+            Err(error) if lock_is_contended(&error) => return Ok(None),
+            Err(error) => return Err(error),
+        };
         match fs2::FileExt::try_lock_exclusive(&file) {
             Ok(()) => Ok(Some(Self { file })),
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(None),
+            Err(error) if lock_is_contended(&error) => Ok(None),
             Err(error) => Err(error),
         }
     }
+}
+
+fn lock_is_contended(error: &io::Error) -> bool {
+    if error.kind() == io::ErrorKind::WouldBlock {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        // LockFileEx contention can surface while opening or locking the shared file.
+        // ERROR_SHARING_VIOLATION is 32 and ERROR_LOCK_VIOLATION is 33.
+        return matches!(error.raw_os_error(), Some(32) | Some(33));
+    }
+    #[cfg(not(windows))]
+    false
 }
 
 impl Drop for StartupLock {
