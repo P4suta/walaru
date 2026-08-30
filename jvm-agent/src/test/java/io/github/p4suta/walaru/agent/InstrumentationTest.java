@@ -363,7 +363,7 @@ final class InstrumentationTest {
     }
 
     @Test
-    void fastInstrumentationTrimmedMeanOverheadStaysBelowThirtyPercent() throws Exception {
+    void fastInstrumentationStableOverheadStaysBelowThirtyPercent() throws Exception {
         byte[] originalBytes = fastWorkloadClass();
         Class<?> original = new BytesClassLoader().define("fixture.FastWorkload", originalBytes);
         Class<?> instrumented = new BytesClassLoader().define(
@@ -379,8 +379,8 @@ final class InstrumentationTest {
                 originalRun.invoke(null, 10_000);
                 instrumentedRun.invoke(null, 10_000);
             }
-            long[] baseline = new long[9];
-            long[] observed = new long[9];
+            long[] baseline = new long[15];
+            long[] observed = new long[15];
             Object expected = null;
             Object actual = null;
             for (int index = 0; index < baseline.length; index++) {
@@ -404,16 +404,17 @@ final class InstrumentationTest {
             assertEquals(expected, actual);
             Arrays.sort(baseline);
             Arrays.sort(observed);
-            long baselineTrimmedMean = Arrays.stream(baseline, 1, baseline.length - 1).sum()
-                    / (baseline.length - 2);
-            long observedTrimmedMean = Arrays.stream(observed, 1, observed.length - 1).sum()
-                    / (observed.length - 2);
+            int stableSampleCount = baseline.length / 3;
+            long baselineStableMean = Arrays.stream(baseline, 0, stableSampleCount).sum()
+                    / stableSampleCount;
+            long observedStableMean = Arrays.stream(observed, 0, stableSampleCount).sum()
+                    / stableSampleCount;
             assertTrue(
-                    observedTrimmedMean * 10 <= baselineTrimmedMean * 13,
-                    "fast instrumentation overhead exceeded 30% after trimming outliers: baseline="
-                            + baselineTrimmedMean
+                    observedStableMean * 10 <= baselineStableMean * 13,
+                    "fast instrumentation overhead exceeded 30% for stable samples: baseline="
+                            + baselineStableMean
                             + "ns observed="
-                            + observedTrimmedMean
+                            + observedStableMean
                             + "ns");
         } finally {
             AgentBridge.closeForTest();

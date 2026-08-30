@@ -883,9 +883,16 @@ impl DaemonServer {
         )?;
 
         loop {
-            let (mut stream, _) = listener.accept()?;
-            stream.set_read_timeout(Some(Duration::from_secs(30)))?;
-            stream.set_write_timeout(Some(Duration::from_secs(30)))?;
+            let (mut stream, _) = match listener.accept() {
+                Ok(connection) => connection,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error.into()),
+            };
+            set_stream_timeouts(
+                &stream,
+                Some(Duration::from_secs(30)),
+                Some(Duration::from_secs(30)),
+            )?;
             let request = match read_message::<RpcRequest>(&mut stream) {
                 Ok(request) => request,
                 // Per-connection I/O failures and malformed/untrusted local clients cannot
@@ -914,8 +921,11 @@ impl DaemonServer {
 /// Sends one request to an already-running daemon.
 pub fn send_request(socket: &Path, request: &RpcRequest) -> Result<RpcResponse, DaemonError> {
     let mut stream = connect_local_endpoint(socket)?;
-    stream.set_read_timeout(Some(Duration::from_mins(6)))?;
-    stream.set_write_timeout(Some(Duration::from_mins(1)))?;
+    set_stream_timeouts(
+        &stream,
+        Some(Duration::from_mins(6)),
+        Some(Duration::from_mins(1)),
+    )?;
     write_message(&mut stream, request)?;
     read_message(&mut stream)
 }
@@ -1071,6 +1081,32 @@ fn read_message<M: Message + Default>(stream: &mut LocalStream) -> Result<M, Dae
     let mut payload = vec![0; length];
     stream.read_exact(&mut payload)?;
     Ok(M::decode(payload.as_slice())?)
+}
+
+fn set_stream_timeouts(
+    stream: &LocalStream,
+    read: Option<Duration>,
+    write: Option<Duration>,
+) -> io::Result<()> {
+    tolerate_unsupported_local_timeout(stream.set_read_timeout(read))?;
+    tolerate_unsupported_local_timeout(stream.set_write_timeout(write))
+}
+
+fn tolerate_unsupported_local_timeout(result: io::Result<()>) -> io::Result<()> {
+    match result {
+        // Darwin can reject SO_RCVTIMEO/SO_SNDTIMEO for AF_UNIX sockets with EINVAL.
+        // The request protocol remains bounded on platforms that support these options;
+        // unsupported local transports continue without terminating the daemon.
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::InvalidInput | io::ErrorKind::Unsupported
+            ) =>
+        {
+            Ok(())
+        }
+        other => other,
+    }
 }
 
 #[cfg(unix)]
