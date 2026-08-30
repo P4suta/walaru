@@ -1,8 +1,8 @@
 //! `walaru` command-line client.
 
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io::{self, IsTerminal, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -332,13 +332,39 @@ fn request(
 }
 
 fn ensure_daemon(layout: &WorkspaceLayout) -> Result<(), Box<dyn std::error::Error>> {
-    if layout.socket.exists()
-        && layout.daemon_metadata.exists()
-        && daemon_is_running(&layout.socket)
-    {
+    if daemon_ready(layout) {
         return Ok(());
     }
     layout.ensure_state_dir()?;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let lock_path = layout.state_dir.join("daemon.starting.lock");
+    loop {
+        if daemon_ready(layout) {
+            return Ok(());
+        }
+        if let Some(_lock) = StartupLock::try_acquire(&lock_path)? {
+            // Readiness can change between the optimistic check and acquiring the lock.
+            // Rechecking here prevents a delayed client from starting a second daemon.
+            if daemon_ready(layout) {
+                return Ok(());
+            }
+            return start_daemon(layout);
+        }
+        if Instant::now() >= deadline {
+            if daemon_ready(layout) {
+                return Ok(());
+            }
+            return Err("timed out waiting for another client to start the daemon".into());
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn daemon_ready(layout: &WorkspaceLayout) -> bool {
+    layout.socket.exists() && layout.daemon_metadata.exists() && daemon_is_running(&layout.socket)
+}
+
+fn start_daemon(layout: &WorkspaceLayout) -> Result<(), Box<dyn std::error::Error>> {
     let log = OpenOptions::new()
         .create(true)
         .append(true)
@@ -352,19 +378,69 @@ fn ensure_daemon(layout: &WorkspaceLayout) -> Result<(), Box<dyn std::error::Err
         .stderr(Stdio::from(log))
         .spawn()?;
     let deadline = Instant::now() + Duration::from_secs(3);
+    let mut child_status = None;
     while Instant::now() < deadline {
-        if layout.socket.exists()
-            && layout.daemon_metadata.exists()
-            && daemon_is_running(&layout.socket)
-        {
+        if daemon_ready(layout) {
             return Ok(());
         }
-        if let Some(status) = child.try_wait()? {
-            return Err(format!("daemon exited during startup with {status}").into());
+        if child_status.is_none() {
+            child_status = child.try_wait()?;
         }
         thread::sleep(Duration::from_millis(20));
     }
+    if let Some(status) = child_status {
+        return Err(format!("daemon exited during startup with {status}").into());
+    }
+    // Do not leave an unready child behind when the startup lock is released. In particular,
+    // this keeps Windows job objects and their inherited handles from outliving a failed client.
+    let _ = child.kill();
+    let _ = child.wait();
     Err(format!("daemon did not create {}", layout.socket.display()).into())
+}
+
+struct StartupLock {
+    file: File,
+}
+
+impl StartupLock {
+    fn try_acquire(path: &Path) -> io::Result<Option<Self>> {
+        let file = match OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(path)
+        {
+            Ok(file) => file,
+            Err(error) if lock_is_contended(&error) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        match fs2::FileExt::try_lock_exclusive(&file) {
+            Ok(()) => Ok(Some(Self { file })),
+            Err(error) if lock_is_contended(&error) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+fn lock_is_contended(error: &io::Error) -> bool {
+    if error.kind() == io::ErrorKind::WouldBlock {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        // LockFileEx contention can surface while opening or locking the shared file.
+        // ERROR_SHARING_VIOLATION is 32 and ERROR_LOCK_VIOLATION is 33.
+        matches!(error.raw_os_error(), Some(32 | 33))
+    }
+    #[cfg(not(windows))]
+    false
+}
+
+impl Drop for StartupLock {
+    fn drop(&mut self) {
+        let _ = fs2::FileExt::unlock(&self.file);
+    }
 }
 
 fn effective_format(requested: OutputFormat, watch: bool) -> OutputFormat {
