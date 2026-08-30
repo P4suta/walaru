@@ -17,6 +17,10 @@ class WalaruPluginTest {
         assertTrue("walaruRuntime" in project.tasks.names)
         assertTrue("walaruReport" in project.tasks.names)
         assertTrue("walaruExplain" in project.tasks.names)
+        val javadoc = project.tasks.getByName("javadoc")
+        assertTrue(
+            project.tasks.getByName("walaruRuntime") in javadoc.taskDependencies.getDependencies(javadoc),
+        )
         assertEquals("fast", project.extensions.getByType(WalaruExtension::class.java).mode.get())
         assertEquals(false, project.extensions.getByType(WalaruExtension::class.java).captureFileIo.get())
     }

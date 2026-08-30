@@ -186,7 +186,7 @@ class WalaruPlugin : Plugin<Project> {
                 .joinToString(File.pathSeparator) { it.absolutePath }
         }
 
-        val apiFiles = project.files(configuration.apiJar)
+        val apiFiles = project.files(configuration.apiJar).builtBy(runtime)
         project.dependencies.add(main.implementationConfigurationName, apiFiles)
         project.tasks.configureEach { task ->
             if (
