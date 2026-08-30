@@ -310,12 +310,28 @@ public final class WalaruClient {
         descendants.forEach(ProcessHandle::destroy);
         process.destroy();
         try {
-            if (!process.waitFor(250, TimeUnit.MILLISECONDS)) {
-                descendants.stream().filter(ProcessHandle::isAlive).forEach(ProcessHandle::destroyForcibly);
-                process.destroyForcibly();
+            boolean exited = process.waitFor(250, TimeUnit.MILLISECONDS);
+            descendants.stream()
+                    .filter(ProcessHandle::isAlive)
+                    .forEach(ProcessHandle::destroyForcibly);
+            if (!exited) process.destroyForcibly();
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1);
+            process.waitFor(1, TimeUnit.SECONDS);
+            for (ProcessHandle descendant : descendants) {
+                if (!descendant.isAlive()) continue;
+                long remaining = Math.max(1L, deadline - System.nanoTime());
+                try {
+                    descendant.onExit().get(remaining, TimeUnit.NANOSECONDS);
+                } catch (ExecutionException | TimeoutException ignored) {
+                    // The process has already received a forcible termination request.
+                }
             }
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
+            descendants.stream()
+                    .filter(ProcessHandle::isAlive)
+                    .forEach(ProcessHandle::destroyForcibly);
             process.destroyForcibly();
         }
     }

@@ -133,6 +133,7 @@ class WalaruClientTest {
                                 System.getProperty("java.class.path"),
                                 FixtureCli.class.getName(),
                                 "lingeringChild")
+                        .directory(Path.of(System.getProperty("java.io.tmpdir")).toFile())
                         .inheritIO()
                         .start();
                 System.out.println(envelope(
