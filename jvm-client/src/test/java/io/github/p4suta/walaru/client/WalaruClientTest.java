@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.nio.file.Files;
 import java.nio.file.FileSystemException;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Arrays;
@@ -191,9 +192,10 @@ class WalaruClientTest {
             if (mode.equals("interruptible")) {
                 int workspaceArgument = arguments.indexOf("--workspace");
                 Path fixtureWorkspace = Path.of(arguments.get(workspaceArgument + 1));
-                Files.writeString(
-                        fixtureWorkspace.resolve("started"),
-                        Long.toString(ProcessHandle.current().pid()));
+                Path started = fixtureWorkspace.resolve("started");
+                Path pending = fixtureWorkspace.resolve("started.pending");
+                Files.writeString(pending, Long.toString(ProcessHandle.current().pid()));
+                Files.move(pending, started, StandardCopyOption.ATOMIC_MOVE);
                 Thread.sleep(10_000);
                 return;
             }
