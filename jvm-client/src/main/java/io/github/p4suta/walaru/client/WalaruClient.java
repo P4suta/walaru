@@ -365,7 +365,8 @@ public final class WalaruClient {
             discoverDescendants(process, descendants);
             destroyDescendants(descendants, force);
             if (!process.isAlive() && descendants.values().stream().noneMatch(ProcessHandle::isAlive)) {
-                return true;
+                long remaining = deadline - System.nanoTime();
+                return remaining > 0 && process.waitFor(remaining, TimeUnit.NANOSECONDS);
             }
 
             long remaining = deadline - System.nanoTime();

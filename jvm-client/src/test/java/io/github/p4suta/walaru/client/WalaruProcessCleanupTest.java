@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 
@@ -21,9 +22,12 @@ class WalaruProcessCleanupTest {
         root.addChild(child);
         child.spawnOnNormalTermination(lateGrandchild);
 
-        boolean terminated = WalaruClient.terminate(new FakeProcess(root));
+        FakeProcess process = new FakeProcess(root);
+
+        boolean terminated = WalaruClient.terminate(process);
 
         assertTrue(terminated);
+        assertTrue(process.completionWasAwaited);
         assertTrue(child.normalTerminationRequests > 0);
         assertTrue(lateGrandchild.normalTerminationRequests > 0);
         assertFalse(root.isAlive());
@@ -33,6 +37,7 @@ class WalaruProcessCleanupTest {
 
     private static final class FakeProcess extends Process {
         private final FakeHandle handle;
+        private boolean completionWasAwaited;
 
         private FakeProcess(FakeHandle handle) {
             this.handle = handle;
@@ -57,6 +62,12 @@ class WalaruProcessCleanupTest {
         public int waitFor() throws InterruptedException {
             while (handle.isAlive()) Thread.sleep(1);
             return 0;
+        }
+
+        @Override
+        public boolean waitFor(long timeout, TimeUnit unit) {
+            completionWasAwaited = true;
+            return !handle.isAlive();
         }
 
         @Override
