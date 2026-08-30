@@ -2,6 +2,7 @@ package io.github.p4suta.walaru.client;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -11,6 +12,9 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -98,6 +102,49 @@ class WalaruClientTest {
         assertTrue(Duration.between(started, Instant.now()).compareTo(Duration.ofSeconds(4)) < 0);
     }
 
+    @Test
+    void interruption_is_preserved_after_the_process_releases_its_workspace() throws Exception {
+        Path interruptedWorkspace = Files.createDirectory(workspace.resolve("interrupted-workspace"));
+        Path started = interruptedWorkspace.resolve("started");
+        WalaruClient client = client(interruptedWorkspace, "interruptible")
+                .timeout(Duration.ofSeconds(10))
+                .build();
+        AtomicReference<WalaruClientException> failure = new AtomicReference<>();
+        AtomicBoolean interruptPreserved = new AtomicBoolean();
+        Thread caller = Thread.ofPlatform().unstarted(() -> {
+            try {
+                client.status();
+            } catch (WalaruClientException expected) {
+                failure.set(expected);
+                interruptPreserved.set(Thread.currentThread().isInterrupted());
+            }
+        });
+
+        caller.start();
+        try {
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (!Files.exists(started) && caller.isAlive() && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+            assertTrue(Files.exists(started));
+
+            caller.interrupt();
+            caller.join(TimeUnit.SECONDS.toMillis(10));
+
+            assertFalse(caller.isAlive());
+            assertNotNull(failure.get());
+            assertTrue(failure.get().getMessage().contains("interrupted"));
+            assertTrue(interruptPreserved.get());
+            Files.delete(started);
+            Files.delete(interruptedWorkspace);
+        } finally {
+            if (caller.isAlive()) {
+                caller.interrupt();
+                caller.join(TimeUnit.SECONDS.toMillis(10));
+            }
+        }
+    }
+
     private WalaruClient.Builder client(String mode) {
         return client(workspace, mode);
     }
@@ -123,6 +170,13 @@ class WalaruClientTest {
                 Thread.sleep(10_000);
                 return;
             }
+            if (mode.equals("interruptible")) {
+                int workspaceArgument = arguments.indexOf("--workspace");
+                Path fixtureWorkspace = Path.of(arguments.get(workspaceArgument + 1));
+                Files.writeString(fixtureWorkspace.resolve("started"), "ready");
+                Thread.sleep(10_000);
+                return;
+            }
             if (mode.equals("oversized")) {
                 System.out.print(envelope("ok", "{\"padding\":\"" + "x".repeat(8_000) + "\"}", "null"));
                 return;
@@ -145,7 +199,7 @@ class WalaruClientTest {
                         .directory(Path.of(System.getProperty("java.io.tmpdir")).toFile())
                         .inheritIO()
                         .start();
-                System.out.println(envelope(
+                System.out.print(envelope(
                         "ok",
                         "{\"running\":true,\"pid\":1,\"version\":\"0.1.0\","
                                 + "\"stateDirectory\":\"state\",\"database\":\"db\",\"socket\":\"socket\"}",
