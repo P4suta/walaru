@@ -1,0 +1,29 @@
+[package]
+name = "walaru-cli"
+description = "AI-first JVM continuous intelligence CLI"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "walaru"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+crossterm.workspace = true
+prost.workspace = true
+ratatui.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+walaru-core = { version = "0.1.0", path = "../walaru-core" }
+walaru-daemon = { version = "0.1.0", path = "../walaru-daemon" }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

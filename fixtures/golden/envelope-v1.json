@@ -1,0 +1,42 @@
+{
+  "schemaVersion": "1",
+  "workspaceId": "ws-0123456789abcdef",
+  "revision": "rev-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "sessionId": "session-1",
+  "runId": "run-1",
+  "status": "ok",
+  "data": {
+    "tests": [
+      {
+        "id": "demo.ExampleTest#works",
+        "status": "passed"
+      }
+    ]
+  },
+  "diagnostics": [
+    {
+      "code": "WALARU_INFO",
+      "severity": "info",
+      "message": "fixture",
+      "details": {}
+    }
+  ],
+  "capabilities": {
+    "backend": "jvm",
+    "completeness": "complete",
+    "supported": ["singleThread", "line"],
+    "unavailable": {}
+  },
+  "nextActions": [
+    {
+      "title": "Inspect trace",
+      "argv": ["walaru", "trace", "run-1"]
+    }
+  ],
+  "page": {
+    "cursor": null,
+    "nextCursor": null,
+    "limit": 100,
+    "returned": 1
+  }
+}

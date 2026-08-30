@@ -1,0 +1,18 @@
+[versions]
+asm = "9.10.1"
+jackson = "2.22.2"
+junit = "6.1.3"
+coroutines = "1.10.2"
+testng = "7.11.0"
+
+[libraries]
+asm = { module = "org.ow2.asm:asm", version.ref = "asm" }
+asm-commons = { module = "org.ow2.asm:asm-commons", version.ref = "asm" }
+jackson-databind = { module = "com.fasterxml.jackson.core:jackson-databind", version.ref = "jackson" }
+jackson-kotlin = { module = "com.fasterxml.jackson.module:jackson-module-kotlin", version.ref = "jackson" }
+junit-bom = { module = "org.junit:junit-bom", version.ref = "junit" }
+junit-jupiter = { module = "org.junit.jupiter:junit-jupiter" }
+junit-launcher = { module = "org.junit.platform:junit-platform-launcher" }
+junit-engine = { module = "org.junit.platform:junit-platform-engine" }
+coroutines-debug = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-debug", version.ref = "coroutines" }
+testng = { module = "org.testng:testng", version.ref = "testng" }

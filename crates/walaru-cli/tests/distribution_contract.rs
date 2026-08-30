@@ -1,0 +1,74 @@
+//! Local source and release-distribution contract.
+
+use std::fs;
+use std::path::Path;
+
+#[test]
+fn repository_documents_and_packages_the_supported_contract() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .unwrap();
+    for required in [
+        "README.md",
+        "LICENSE-MIT",
+        "LICENSE-APACHE",
+        "docs/architecture.md",
+        "docs/contracts.md",
+        "docs/replay.md",
+        "CONTRIBUTING.md",
+        "SECURITY.md",
+        "CODE_OF_CONDUCT.md",
+        "scripts/check.sh",
+        "scripts/lint-repository.sh",
+        "scripts/package-linux.sh",
+        "scripts/package-macos.sh",
+        "scripts/package-windows.ps1",
+        ".github/workflows/ci.yml",
+        ".github/workflows/release.yml",
+        ".github/dependabot.yml",
+        "clients/vscode/package.json",
+        "clients/vscode/client.js",
+        "clients/vscode/extension.js",
+        "clients/vscode/test/client.test.js",
+        "clients/intellij/walaru-external-tools.xml",
+        "clients/intellij/README.md",
+    ] {
+        assert!(root.join(required).is_file(), "missing {required}");
+    }
+
+    let readme = fs::read_to_string(root.join("README.md")).unwrap();
+    for required in ["JDK 21", "Gradle", "reverse", "structured contract"] {
+        assert!(readme.contains(required), "README is missing `{required}`");
+    }
+    let check = fs::read_to_string(root.join("scripts/check.sh")).unwrap();
+    assert!(check.contains("cargo test --workspace"));
+    assert!(check.contains("./gradlew check"));
+    assert!(check.contains("node --test clients/vscode/test/*.test.js"));
+    assert!(!check.contains("/home/"), "check script must be portable");
+    let package = fs::read_to_string(root.join("scripts/package-linux.sh")).unwrap();
+    assert!(package.contains("skills/walaru"));
+    assert!(package.contains("sha256sum"));
+    assert!(package.contains("workspace_version"));
+    assert!(!package.contains("jvm-agent-0.1.0"));
+
+    let workflow = fs::read_to_string(root.join(".github/workflows/ci.yml")).unwrap();
+    for required in ["ubuntu-24.04", "macos-15", "windows-2025", "21", "25"] {
+        assert!(workflow.contains(required), "CI is missing `{required}`");
+    }
+
+    let vscode = fs::read_to_string(root.join("clients/vscode/client.js")).unwrap();
+    assert!(vscode.contains("--format"));
+    assert!(vscode.contains("--max-bytes"));
+    assert!(vscode.contains("shell: false"));
+    assert!(!vscode.contains("exec("));
+
+    let manifest = fs::read_to_string(root.join("clients/vscode/package.json")).unwrap();
+    assert!(manifest.contains("walaru.refreshIntervalSeconds"));
+    assert!(manifest.contains("\"scope\": \"resource\""));
+
+    let intellij =
+        fs::read_to_string(root.join("clients/intellij/walaru-external-tools.xml")).unwrap();
+    assert!(intellij.contains("$ProjectFileDir$"));
+    assert!(intellij.contains("--format json"));
+}

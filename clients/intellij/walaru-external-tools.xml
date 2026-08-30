@@ -1,0 +1,11 @@
+<toolSet name="Walaru">
+  <tool name="Walaru Status" description="Query the local Walaru daemon" showInMainMenu="true" showInEditor="true">
+    <exec><option name="COMMAND" value="walaru"/><option name="PARAMETERS" value="--workspace &quot;$ProjectFileDir$&quot; --format json --max-bytes 65536 status"/><option name="WORKING_DIRECTORY" value="$ProjectFileDir$"/></exec>
+  </tool>
+  <tool name="Walaru Verify" description="Run revision-bound verification" showInMainMenu="true" showInEditor="true">
+    <exec><option name="COMMAND" value="walaru"/><option name="PARAMETERS" value="--workspace &quot;$ProjectFileDir$&quot; --format json --max-bytes 65536 verify"/><option name="WORKING_DIRECTORY" value="$ProjectFileDir$"/></exec>
+  </tool>
+  <tool name="Walaru Tests" description="List structured test results" showInMainMenu="true" showInEditor="true">
+    <exec><option name="COMMAND" value="walaru"/><option name="PARAMETERS" value="--workspace &quot;$ProjectFileDir$&quot; --format json --max-bytes 65536 tests"/><option name="WORKING_DIRECTORY" value="$ProjectFileDir$"/></exec>
+  </tool>
+</toolSet>

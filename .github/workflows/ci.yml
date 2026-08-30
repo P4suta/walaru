@@ -1,0 +1,340 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust (${{ matrix.os }})
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, macos-15-intel, windows-2025]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Cache Rust build
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+      - name: Check formatting
+        if: runner.os == 'Linux'
+        run: cargo fmt --all -- --check
+      - name: Run Rust tests
+        run: cargo test --workspace
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  jvm:
+    name: JVM (${{ matrix.os }}, JDK ${{ matrix.java }})
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, macos-15-intel, windows-2025]
+        java: [21, 25]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Set up JDK
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+          cache: gradle
+      - name: Check JVM projects
+        if: runner.os != 'Windows'
+        run: ./gradlew check --no-daemon
+      - name: Check JVM projects on Windows
+        if: runner.os == 'Windows'
+        run: ./gradlew.bat check --no-daemon
+
+  vscode:
+    name: VS Code
+    timeout-minutes: 15
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: clients/vscode/package-lock.json
+      - name: Install extension dependencies
+        run: npm ci
+        working-directory: clients/vscode
+      - name: Test extension models and client
+        run: npm test
+        working-directory: clients/vscode
+      - name: Validate extension manifest
+        run: npm run validate
+        working-directory: clients/vscode
+      - name: Audit npm dependencies
+        run: npm audit --audit-level=high
+        working-directory: clients/vscode
+
+  repository-lint:
+    name: Repository lint
+    timeout-minutes: 20
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Install actionlint
+        env:
+          GOBIN: ${{ runner.temp }}/bin
+        run: |
+          mkdir -p "$GOBIN"
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+          echo "$GOBIN" >> "$GITHUB_PATH"
+      - name: Install zizmor
+        run: cargo install --locked zizmor --version 1.29.0
+      - name: Lint repository policy
+        run: scripts/lint-repository.sh
+
+  rust-security:
+    name: Rust dependency policy
+    timeout-minutes: 30
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Cache security tools
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cargo/bin
+          key: rust-security-cargo-deny-0.20.2-cargo-audit-0.22.2
+      - name: Install security tools
+        run: |
+          command -v cargo-deny >/dev/null || cargo install --locked cargo-deny --version 0.20.2
+          command -v cargo-audit >/dev/null || cargo install --locked cargo-audit --version 0.22.2
+      - name: Check licenses, bans, advisories, and sources
+        run: cargo deny check
+      - name: Audit Rust lockfile
+        run: cargo audit --deny warnings
+
+  dependency-review:
+    name: Dependency review
+    timeout-minutes: 10
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Review dependency changes
+        if: github.event_name == 'pull_request'
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: moderate
+
+  codeql:
+    name: CodeQL (${{ matrix.language }})
+    timeout-minutes: 30
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      security-events: write # Upload CodeQL results for the three declared languages.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: java-kotlin
+            build-mode: manual
+          - language: javascript-typescript
+            build-mode: none
+          - language: actions
+            build-mode: none
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Set up JDK
+        if: matrix.language == 'java-kotlin'
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@6f5948dfacef28e207b48d0905cf90c03365536d # v3.37.9
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+      - name: Build Java and Kotlin
+        if: matrix.language == 'java-kotlin'
+        run: ./gradlew classes testClasses --no-daemon
+      - name: Analyze
+        uses: github/codeql-action/analyze@6f5948dfacef28e207b48d0905cf90c03365536d # v3.37.9
+        with:
+          category: /language:${{ matrix.language }}
+
+  packages:
+    name: Package (${{ matrix.name }})
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-24.04
+          - name: macos-aarch64
+            os: macos-15
+          - name: macos-x86_64
+            os: macos-15-intel
+          - name: windows-x86_64
+            os: windows-2025
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Set up JDK
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+      - name: Build Unix package
+        if: runner.os == 'Linux'
+        run: scripts/package-linux.sh
+      - name: Build macOS package
+        if: runner.os == 'macOS'
+        run: scripts/package-macos.sh
+      - name: Build Windows package
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: scripts/package-windows.ps1
+      - name: Smoke-test Unix package
+        if: runner.os != 'Windows'
+        run: scripts/smoke-package.sh dist/*.tar.gz
+      - name: Smoke-test Windows package
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: scripts/smoke-package.ps1 (Get-ChildItem dist/*.zip).FullName
+      - name: Upload package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: walaru-${{ matrix.name }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  vscode-package:
+    name: VS Code package
+    timeout-minutes: 15
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: clients/vscode/package-lock.json
+      - name: Install extension dependencies
+        run: npm ci
+        working-directory: clients/vscode
+      - name: Build VSIX
+        run: npm run package
+        working-directory: clients/vscode
+      - name: Upload VSIX
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: walaru-vsix
+          path: dist/*.vsix
+          if-no-files-found: error
+          retention-days: 7
+
+  security-scan:
+    name: Secret and filesystem scan
+    timeout-minutes: 20
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Check out full history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Scan Git history for secrets
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+      - name: Scan filesystem
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: 1
+          skip-dirs: target,dist,.gradle,.gradle-user-home
+
+  ci-success:
+    name: ci-success
+    if: always()
+    timeout-minutes: 5
+    runs-on: ubuntu-24.04
+    needs:
+      - rust
+      - jvm
+      - vscode
+      - repository-lint
+      - rust-security
+      - dependency-review
+      - codeql
+      - packages
+      - vscode-package
+      - security-scan
+    steps:
+      - name: Require every CI gate
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          if [[ " $RESULTS " == *" failure "* || " $RESULTS " == *" cancelled "* || " $RESULTS " == *" skipped "* ]]; then
+            echo "CI gate results: $RESULTS" >&2
+            exit 1
+          fi
+          echo "CI gate results: $RESULTS"

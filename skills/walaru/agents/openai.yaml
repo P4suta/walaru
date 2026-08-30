@@ -1,0 +1,4 @@
+interface:
+  display_name: "Walaru JVM Intelligence"
+  short_description: "Diagnose JVM tests with structured local evidence"
+  default_prompt: "Use $walaru to verify this JVM change and explain any failure from structured evidence."

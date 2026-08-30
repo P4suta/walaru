@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p4suta.github.io/walaru/schema/envelope-v1.schema.json",
+  "title": "Walaru CLI envelope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "workspaceId",
+    "revision",
+    "sessionId",
+    "runId",
+    "status",
+    "data",
+    "diagnostics",
+    "capabilities",
+    "nextActions",
+    "page"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1" },
+    "workspaceId": { "type": "string", "pattern": "^ws-[0-9a-f]{16}$" },
+    "revision": { "type": "string", "pattern": "^rev-[0-9a-f]{64}$" },
+    "sessionId": { "type": "string" },
+    "runId": { "type": ["string", "null"] },
+    "status": { "enum": ["ok", "failure", "partial", "stale", "unsupported", "error"] },
+    "data": {},
+    "diagnostics": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/diagnostic" }
+    },
+    "capabilities": { "$ref": "#/$defs/capabilities" },
+    "nextActions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/nextAction" }
+    },
+    "page": {
+      "anyOf": [{ "$ref": "#/$defs/page" }, { "type": "null" }]
+    }
+  },
+  "$defs": {
+    "diagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "severity", "message", "details"],
+      "properties": {
+        "code": { "type": "string" },
+        "severity": { "enum": ["info", "warning", "error"] },
+        "message": { "type": "string" },
+        "details": { "type": "object" }
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["backend", "completeness", "supported", "unavailable"],
+      "properties": {
+        "backend": { "type": "string" },
+        "completeness": { "enum": ["complete", "partial", "unsupported"] },
+        "supported": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "unavailable": { "type": "object", "additionalProperties": { "type": "string" } }
+      }
+    },
+    "nextAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["title", "argv"],
+      "properties": {
+        "title": { "type": "string" },
+        "argv": { "type": "array", "minItems": 1, "items": { "type": "string" } }
+      }
+    },
+    "page": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cursor", "nextCursor", "limit", "returned"],
+      "properties": {
+        "cursor": { "type": ["string", "null"] },
+        "nextCursor": { "type": ["string", "null"] },
+        "limit": { "type": "integer", "minimum": 1 },
+        "returned": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

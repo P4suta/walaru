@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package io.github.p4suta.walaru.v1;
+
+// Local UDS request. Command-specific payloads remain JSON so minor versions can
+// add fields without regenerating every client.
+message RpcRequest {
+  uint32 schema_version = 1;
+  string request_id = 2;
+  string workspace_root = 3;
+  string command = 4;
+  bytes payload_json = 5;
+}
+
+message RpcResponse {
+  uint32 schema_version = 1;
+  string request_id = 2;
+  int32 exit_code = 3;
+  bytes envelope_json = 4;
+}
+
+message WorkerEvent {
+  uint32 schema_version = 1;
+  string workspace_id = 2;
+  string revision = 3;
+  string run_id = 4;
+  string test_id = 5;
+  uint64 sequence = 6;
+  uint64 thread_id = 7;
+  string kind = 8;
+  bytes event_json = 9;
+}

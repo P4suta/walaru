@@ -1,0 +1,94 @@
+{
+  "name": "walaru",
+  "displayName": "Walaru",
+  "description": "Local-first JVM test intelligence and deterministic replay",
+  "version": "0.1.0",
+  "publisher": "p4suta",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/P4suta/walaru.git"
+  },
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Testing",
+    "Other"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onView:walaru.tests"
+  ],
+  "contributes": {
+    "commands": [
+      { "command": "walaru.refresh", "title": "Walaru: Refresh" },
+      { "command": "walaru.status", "title": "Walaru: Status" },
+      { "command": "walaru.doctor", "title": "Walaru: Doctor" },
+      { "command": "walaru.verify", "title": "Walaru: Verify Impacted Tests" },
+      { "command": "walaru.fullVerify", "title": "Walaru: Full Verify" },
+      { "command": "walaru.failure", "title": "Walaru: Open Failure" },
+      { "command": "walaru.trace", "title": "Walaru: Open Trace" },
+      { "command": "walaru.record", "title": "Walaru: Record Test" },
+      { "command": "walaru.openTui", "title": "Walaru: Open TUI" }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "walaru",
+          "title": "Walaru",
+          "icon": "media/walaru.svg"
+        }
+      ]
+    },
+    "views": {
+      "walaru": [
+        {
+          "id": "walaru.tests",
+          "name": "Workspaces and Tests"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        { "command": "walaru.refresh", "when": "view == walaru.tests", "group": "navigation" },
+        { "command": "walaru.openTui", "when": "view == walaru.tests", "group": "navigation" }
+      ],
+      "view/item/context": [
+        { "command": "walaru.verify", "when": "view == walaru.tests && viewItem == walaruWorkspace", "group": "inline" },
+        { "command": "walaru.fullVerify", "when": "view == walaru.tests && viewItem == walaruWorkspace", "group": "walaru@1" },
+        { "command": "walaru.doctor", "when": "view == walaru.tests && viewItem == walaruWorkspace", "group": "walaru@2" },
+        { "command": "walaru.failure", "when": "view == walaru.tests && viewItem == walaruFailedTest", "group": "inline" },
+        { "command": "walaru.trace", "when": "view == walaru.tests && (viewItem == walaruTest || viewItem == walaruFailedTest)", "group": "walaru@1" },
+        { "command": "walaru.record", "when": "view == walaru.tests && (viewItem == walaruTest || viewItem == walaruFailedTest)", "group": "walaru@2" }
+      ]
+    },
+    "configuration": {
+      "title": "Walaru",
+      "properties": {
+        "walaru.binaryPath": {
+          "type": "string",
+          "default": "",
+          "scope": "resource",
+          "description": "Path to the Walaru binary. Leave empty to use walaru from PATH."
+        },
+        "walaru.refreshIntervalSeconds": {
+          "type": "number",
+          "default": 10,
+          "minimum": 2,
+          "maximum": 300,
+          "scope": "resource",
+          "description": "Refresh interval while the Walaru view is visible."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "validate": "node scripts/validate-manifest.mjs",
+    "package": "node scripts/package-vsix.mjs"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "3.9.2"
+  }
+}

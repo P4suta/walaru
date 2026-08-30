@@ -1,0 +1,17 @@
+{
+  "description": "Local-first test intelligence and deterministic replay for Java and Kotlin.",
+  "has_issues": true,
+  "has_projects": false,
+  "has_wiki": false,
+  "has_discussions": false,
+  "allow_merge_commit": false,
+  "allow_rebase_merge": false,
+  "allow_squash_merge": true,
+  "allow_auto_merge": true,
+  "delete_branch_on_merge": true,
+  "allow_update_branch": true,
+  "security_and_analysis": {
+    "secret_scanning": { "status": "enabled" },
+    "secret_scanning_push_protection": { "status": "enabled" }
+  }
+}

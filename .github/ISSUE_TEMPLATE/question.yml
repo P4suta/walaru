@@ -1,0 +1,23 @@
+name: Question
+description: Ask about setup, contracts, or supported behavior
+title: "question: "
+labels: ["question"]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Walaru revision or version
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: Include relevant platform and redacted command output.
+    validations:
+      required: true
+  - type: checkboxes
+    id: security
+    attributes:
+      label: Security check
+      options:
+        - label: This does not disclose a vulnerability or secret.
+          required: true
