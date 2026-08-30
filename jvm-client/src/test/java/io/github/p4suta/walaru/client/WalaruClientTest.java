@@ -2,14 +2,19 @@ package io.github.p4suta.walaru.client;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -70,14 +75,17 @@ class WalaruClientTest {
     }
 
     @Test
-    void response_size_and_process_time_are_hard_bounded() {
+    void response_size_and_process_time_are_hard_bounded() throws Exception {
         WalaruClient oversized = client("oversized").maxResponseBytes(4_096).build();
         WalaruClientException size = assertThrows(WalaruClientException.class, oversized::status);
         assertTrue(size.getMessage().contains("exceeded"));
 
-        WalaruClient slow = client("slow").timeout(Duration.ofMillis(50)).build();
+        Path timeoutWorkspace = Files.createDirectory(workspace.resolve("timeout-workspace"));
+        WalaruClient slow = client(timeoutWorkspace, "slow").timeout(Duration.ofMillis(50)).build();
         WalaruClientException timeout = assertThrows(WalaruClientException.class, slow::status);
         assertTrue(timeout.getMessage().contains("timeout"));
+        Files.delete(timeoutWorkspace);
+        assertFalse(Files.exists(timeoutWorkspace));
         assertThrows(
                 IllegalArgumentException.class,
                 () -> client("normal").timeout(Duration.ofDays(2)));
@@ -94,10 +102,57 @@ class WalaruClientTest {
         assertTrue(Duration.between(started, Instant.now()).compareTo(Duration.ofSeconds(4)) < 0);
     }
 
+    @Test
+    void interruption_is_preserved_after_the_process_releases_its_workspace() throws Exception {
+        Path interruptedWorkspace = Files.createDirectory(workspace.resolve("interrupted-workspace"));
+        Path started = interruptedWorkspace.resolve("started");
+        WalaruClient client = client(interruptedWorkspace, "interruptible")
+                .timeout(Duration.ofSeconds(10))
+                .build();
+        AtomicReference<WalaruClientException> failure = new AtomicReference<>();
+        AtomicBoolean interruptPreserved = new AtomicBoolean();
+        Thread caller = Thread.ofPlatform().unstarted(() -> {
+            try {
+                client.status();
+            } catch (WalaruClientException expected) {
+                failure.set(expected);
+                interruptPreserved.set(Thread.currentThread().isInterrupted());
+            }
+        });
+
+        caller.start();
+        try {
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (!Files.exists(started) && caller.isAlive() && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+            assertTrue(Files.exists(started));
+
+            caller.interrupt();
+            caller.join(TimeUnit.SECONDS.toMillis(10));
+
+            assertFalse(caller.isAlive());
+            assertNotNull(failure.get());
+            assertTrue(failure.get().getMessage().contains("interrupted"));
+            assertTrue(interruptPreserved.get());
+            Files.delete(started);
+            Files.delete(interruptedWorkspace);
+        } finally {
+            if (caller.isAlive()) {
+                caller.interrupt();
+                caller.join(TimeUnit.SECONDS.toMillis(10));
+            }
+        }
+    }
+
     private WalaruClient.Builder client(String mode) {
+        return client(workspace, mode);
+    }
+
+    private WalaruClient.Builder client(Path workingDirectory, String mode) {
         String executable = System.getProperty("os.name").toLowerCase().contains("win") ? "java.exe" : "java";
         Path java = Path.of(System.getProperty("java.home"), "bin", executable);
-        return WalaruClient.builder(workspace).launcher(List.of(
+        return WalaruClient.builder(workingDirectory).launcher(List.of(
                 java.toString(),
                 "-cp",
                 System.getProperty("java.class.path"),
@@ -112,6 +167,13 @@ class WalaruClientTest {
             String mode = raw[0];
             List<String> arguments = Arrays.asList(raw).subList(1, raw.length);
             if (mode.equals("slow")) {
+                Thread.sleep(10_000);
+                return;
+            }
+            if (mode.equals("interruptible")) {
+                int workspaceArgument = arguments.indexOf("--workspace");
+                Path fixtureWorkspace = Path.of(arguments.get(workspaceArgument + 1));
+                Files.writeString(fixtureWorkspace.resolve("started"), "ready");
                 Thread.sleep(10_000);
                 return;
             }
@@ -137,7 +199,7 @@ class WalaruClientTest {
                         .directory(Path.of(System.getProperty("java.io.tmpdir")).toFile())
                         .inheritIO()
                         .start();
-                System.out.println(envelope(
+                System.out.print(envelope(
                         "ok",
                         "{\"running\":true,\"pid\":1,\"version\":\"0.1.0\","
                                 + "\"stateDirectory\":\"state\",\"database\":\"db\",\"socket\":\"socket\"}",

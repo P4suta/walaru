@@ -13,8 +13,10 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -22,6 +24,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.LockSupport;
 
 /**
  * Shell-free typed client for Walaru's bounded schema-v1 CLI contract.
@@ -31,6 +35,11 @@ import java.util.concurrent.TimeoutException;
  */
 public final class WalaruClient {
     private static final int MAX_STDERR_BYTES = 64 * 1024;
+    private static final Duration GRACEFUL_TERMINATION_TIMEOUT = Duration.ofMillis(250);
+    private static final Duration FORCEFUL_TERMINATION_TIMEOUT = Duration.ofSeconds(5);
+    private static final Duration READER_SHUTDOWN_TIMEOUT = Duration.ofSeconds(2);
+    private static final long PIPE_POLL_INTERVAL_NANOS = TimeUnit.MILLISECONDS.toNanos(1);
+    private static final long TERMINATION_POLL_INTERVAL_NANOS = TimeUnit.MILLISECONDS.toNanos(10);
 
     private final Path workspace;
     private final List<String> launcher;
@@ -223,17 +232,21 @@ public final class WalaruClient {
         }
 
         ExecutorService readers = Executors.newVirtualThreadPerTaskExecutor();
-        Future<BoundedBytes> stdout =
-                readers.submit(() -> readBoundedLine(process.getInputStream(), maxResponseBytes));
-        Future<BoundedBytes> stderr =
-                readers.submit(() -> readBoundedLine(process.getErrorStream(), MAX_STDERR_BYTES));
+        AtomicBoolean processFinished = new AtomicBoolean();
+        Future<BoundedBytes> stdout = readers.submit(
+                () -> readBoundedLine(process.getInputStream(), maxResponseBytes, processFinished));
+        Future<BoundedBytes> stderr = readers.submit(
+                () -> readBoundedLine(process.getErrorStream(), MAX_STDERR_BYTES, processFinished));
         long deadline = System.nanoTime() + timeout.toNanos();
         try {
             boolean completed = process.waitFor(timeout.toNanos(), TimeUnit.NANOSECONDS);
             if (!completed) {
-                terminate(process);
-                throw new WalaruClientException("Walaru exceeded timeout " + timeout);
+                processFinished.set(true);
+                boolean terminated = terminate(process);
+                String cleanup = terminated ? "" : "; its process tree did not terminate within the cleanup bound";
+                throw new WalaruClientException("Walaru exceeded timeout " + timeout + cleanup);
             }
+            processFinished.set(true);
             BoundedBytes output = future(stdout, "stdout", deadline);
             int exitCode = process.exitValue();
             if (output.exceeded()) {
@@ -263,13 +276,13 @@ public final class WalaruClient {
             }
             return new WalaruResult<>(WalaruExit.fromCode(exitCode), exitCode, envelope);
         } catch (InterruptedException interrupted) {
+            processFinished.set(true);
+            boolean terminated = terminate(process);
+            String cleanup = terminated ? "" : "; its process tree did not terminate within the cleanup bound";
             Thread.currentThread().interrupt();
-            terminate(process);
-            throw new WalaruClientException("interrupted while waiting for Walaru", interrupted);
+            throw new WalaruClientException("interrupted while waiting for Walaru" + cleanup, interrupted);
         } finally {
-            stdout.cancel(true);
-            stderr.cancel(true);
-            readers.shutdownNow();
+            closeReaders(processFinished, stdout, stderr, readers);
         }
     }
 
@@ -289,50 +302,121 @@ public final class WalaruClient {
         }
     }
 
-    private static BoundedBytes readBoundedLine(InputStream input, int maximum) throws IOException {
-        ByteArrayOutputStream kept = new ByteArrayOutputStream(Math.min(maximum, 8 * 1024));
-        byte[] chunk = new byte[8 * 1024];
-        long total = 0;
-        int read;
-        while ((read = input.read(chunk)) != -1) {
-            for (int index = 0; index < read; index += 1) {
-                if (chunk[index] == '\n') return new BoundedBytes(kept.toByteArray(), total > maximum);
-                if (total < maximum) kept.write(chunk[index]);
-                total += 1;
-            }
-        }
-        return new BoundedBytes(kept.toByteArray(), total > maximum);
-    }
-
-    private static void terminate(Process process) {
-        List<ProcessHandle> descendants = new ArrayList<>(process.descendants().toList());
-        Collections.reverse(descendants);
-        descendants.forEach(ProcessHandle::destroy);
-        process.destroy();
-        try {
-            boolean exited = process.waitFor(250, TimeUnit.MILLISECONDS);
-            descendants.stream()
-                    .filter(ProcessHandle::isAlive)
-                    .forEach(ProcessHandle::destroyForcibly);
-            if (!exited) process.destroyForcibly();
-
-            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1);
-            process.waitFor(1, TimeUnit.SECONDS);
-            for (ProcessHandle descendant : descendants) {
-                if (!descendant.isAlive()) continue;
-                long remaining = Math.max(1L, deadline - System.nanoTime());
-                try {
-                    descendant.onExit().get(remaining, TimeUnit.NANOSECONDS);
-                } catch (ExecutionException | TimeoutException ignored) {
-                    // The process has already received a forcible termination request.
+    private static BoundedBytes readBoundedLine(
+            InputStream input, int maximum, AtomicBoolean processFinished) throws IOException {
+        // A blocking read can keep ProcessPipeInputStream.close waiting on Windows when a daemon
+        // inherited the pipe. Reading only bytes reported as immediately available keeps both
+        // cancellation and stream ownership bounded without waiting for that daemon to exit.
+        try (input) {
+            ByteArrayOutputStream kept = new ByteArrayOutputStream(Math.min(maximum, 8 * 1024));
+            byte[] chunk = new byte[8 * 1024];
+            long total = 0;
+            while (true) {
+                if (Thread.currentThread().isInterrupted()) {
+                    return new BoundedBytes(kept.toByteArray(), total > maximum);
+                }
+                int available = input.available();
+                if (available == 0) {
+                    if (processFinished.get()) {
+                        return new BoundedBytes(kept.toByteArray(), total > maximum);
+                    }
+                    LockSupport.parkNanos(PIPE_POLL_INTERVAL_NANOS);
+                    continue;
+                }
+                int read = input.read(chunk, 0, Math.min(available, chunk.length));
+                if (read == -1) return new BoundedBytes(kept.toByteArray(), total > maximum);
+                for (int index = 0; index < read; index += 1) {
+                    if (chunk[index] == '\n') return new BoundedBytes(kept.toByteArray(), total > maximum);
+                    if (total < maximum) kept.write(chunk[index]);
+                    total += 1;
                 }
             }
+        }
+    }
+
+    static boolean terminate(Process process) {
+        // Keep every discovered handle as an additional root: the original parent can exit while
+        // a tracked child is still creating a grandchild during graceful shutdown.
+        Map<Long, ProcessHandle> descendants = new LinkedHashMap<>();
+        try {
+            if (terminatePhase(process, descendants, false, GRACEFUL_TERMINATION_TIMEOUT)) return true;
+            return terminatePhase(process, descendants, true, FORCEFUL_TERMINATION_TIMEOUT);
         } catch (InterruptedException interrupted) {
+            discoverDescendants(process, descendants);
+            destroyDescendants(descendants, true);
+            if (process.isAlive()) process.destroyForcibly();
             Thread.currentThread().interrupt();
-            descendants.stream()
-                    .filter(ProcessHandle::isAlive)
-                    .forEach(ProcessHandle::destroyForcibly);
-            process.destroyForcibly();
+            return false;
+        }
+    }
+
+    private static boolean terminatePhase(
+            Process process,
+            Map<Long, ProcessHandle> descendants,
+            boolean force,
+            Duration timeout) throws InterruptedException {
+        long deadline = System.nanoTime() + timeout.toNanos();
+        while (true) {
+            discoverDescendants(process, descendants);
+            if (process.isAlive()) {
+                if (force) process.destroyForcibly();
+                else process.destroy();
+            }
+            discoverDescendants(process, descendants);
+            destroyDescendants(descendants, force);
+            if (!process.isAlive() && descendants.values().stream().noneMatch(ProcessHandle::isAlive)) {
+                long remaining = deadline - System.nanoTime();
+                return remaining > 0 && process.waitFor(remaining, TimeUnit.NANOSECONDS);
+            }
+
+            long remaining = deadline - System.nanoTime();
+            if (remaining <= 0) return false;
+            TimeUnit.NANOSECONDS.sleep(Math.min(remaining, TERMINATION_POLL_INTERVAL_NANOS));
+        }
+    }
+
+    private static void discoverDescendants(Process process, Map<Long, ProcessHandle> descendants) {
+        List<ProcessHandle> sources = new ArrayList<>();
+        sources.add(process.toHandle());
+        sources.addAll(descendants.values());
+        for (ProcessHandle source : sources) {
+            try (var discovered = source.descendants()) {
+                discovered.forEach(handle -> {
+                    if (handle.pid() != process.pid()) descendants.putIfAbsent(handle.pid(), handle);
+                });
+            }
+        }
+    }
+
+    private static void destroyDescendants(Map<Long, ProcessHandle> descendants, boolean force) {
+        List<ProcessHandle> leavesFirst = new ArrayList<>(descendants.values());
+        Collections.reverse(leavesFirst);
+        leavesFirst.stream().filter(ProcessHandle::isAlive).forEach(handle -> {
+            if (force) handle.destroyForcibly();
+            else handle.destroy();
+        });
+    }
+
+    private static void closeReaders(
+            AtomicBoolean processFinished,
+            Future<BoundedBytes> stdout,
+            Future<BoundedBytes> stderr,
+            ExecutorService readers) {
+        processFinished.set(true);
+        stdout.cancel(true);
+        stderr.cancel(true);
+        readers.shutdownNow();
+
+        boolean interrupted = Thread.interrupted();
+        try {
+            if (!readers.awaitTermination(READER_SHUTDOWN_TIMEOUT.toNanos(), TimeUnit.NANOSECONDS)) {
+                readers.shutdownNow();
+            }
+        } catch (InterruptedException shutdownInterrupted) {
+            interrupted = true;
+            readers.shutdownNow();
+        } finally {
+            if (interrupted) Thread.currentThread().interrupt();
         }
     }
 
