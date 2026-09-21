@@ -3,7 +3,7 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.KotlinJvmCompile
 
 plugins {
-    kotlin("jvm") version "2.4.10" apply false
+    kotlin("jvm") version "2.4.20" apply false
 }
 
 val workspaceVersion = providers.fileContents(layout.projectDirectory.file("Cargo.toml")).asText.map { manifest ->
