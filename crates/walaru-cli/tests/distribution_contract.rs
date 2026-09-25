@@ -27,7 +27,7 @@ fn repository_documents_and_packages_the_supported_contract() {
         "scripts/package-windows.ps1",
         ".github/workflows/ci.yml",
         ".github/workflows/release.yml",
-        ".github/dependabot.yml",
+        "renovate.json",
         "clients/vscode/package.json",
         "clients/vscode/client.js",
         "clients/vscode/extension.js",
@@ -98,6 +98,12 @@ fn repository_documents_and_packages_the_supported_contract() {
     assert!(
         security.contains("https://github.com/P4suta/walaru/security/advisories/new"),
         "security policy must link directly to private vulnerability reporting"
+    );
+
+    let renovate = fs::read_to_string(root.join("renovate.json")).unwrap();
+    assert!(
+        renovate.contains("\"github>P4suta/renovate-config\""),
+        "dependency updates must follow the shared P4suta/renovate-config policy"
     );
 
     let vscode = fs::read_to_string(root.join("clients/vscode/client.js")).unwrap();
