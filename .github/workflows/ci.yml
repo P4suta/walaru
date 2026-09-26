@@ -207,7 +207,8 @@ jobs:
           build-mode: ${{ matrix.build-mode }}
       - name: Build Java and Kotlin
         if: matrix.language == 'java-kotlin'
-        run: ./gradlew classes testClasses --no-daemon
+        # CodeQL extracts only what the compilers compile, and the restored Gradle cache would otherwise serve every class from the build cache.
+        run: ./gradlew classes testClasses --no-daemon --no-build-cache
       - name: Analyze
         uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         with:
