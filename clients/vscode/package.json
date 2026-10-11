@@ -118,6 +118,6 @@
     "package": "node scripts/package-vsix.mjs"
   },
   "devDependencies": {
-    "@vscode/vsce": "3.9.2"
+    "@vscode/vsce": "4.0.0"
   }
 }
