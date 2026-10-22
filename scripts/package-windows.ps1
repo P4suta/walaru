@@ -26,7 +26,7 @@ try {
     Copy-Item "jvm-runner\build\libs\jvm-runner-$WorkspaceVersion-all.jar" "$BundleRoot\lib\walaru-runner.jar"
     Copy-Item "gradle-adapter\build\libs\gradle-adapter-$WorkspaceVersion-all.jar" "$BundleRoot\lib\walaru-gradle-adapter.jar"
     Copy-Item gradle\walaru.init.gradle.kts "$BundleRoot\share\walaru\walaru.init.gradle.kts"
-    Copy-Item LICENSE-MIT, LICENSE-APACHE $BundleRoot
+    Copy-Item LICENSE-MIT, LICENSE-APACHE, NOTICE $BundleRoot
     Copy-Item README.md "$BundleRoot\README.md"
     Copy-Item -Recurse docs "$BundleRoot\docs"
     Copy-Item -Recurse schemas "$BundleRoot\schemas"

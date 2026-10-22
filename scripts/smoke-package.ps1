@@ -99,6 +99,10 @@ $TemporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::New
 try {
     Expand-Archive -Path $Archive -DestinationPath $TemporaryRoot
     $BundleName = [System.IO.Path]::GetFileNameWithoutExtension($Archive)
+    $Notice = Join-Path $TemporaryRoot "$BundleName\NOTICE"
+    if (-not (Test-Path -LiteralPath $Notice -PathType Leaf) -or (Get-Item -LiteralPath $Notice).Length -eq 0) {
+        throw "package is missing NOTICE"
+    }
     $Binary = Join-Path $TemporaryRoot "$BundleName\bin\walaru.exe"
     if (-not (Test-Path $Binary)) { throw "package is missing bin\walaru.exe" }
     foreach ($Library in "walaru-api.jar", "walaru-client.jar", "walaru-testkit.jar", "walaru-agent.jar") {

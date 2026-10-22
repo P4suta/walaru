@@ -609,18 +609,17 @@ fn validate_recording(recording: &Recording) -> Result<(), ReplayError> {
             );
         return Err(ReplayError::UnsupportedCapability { capability, reason });
     }
-    for required in ["pureJvm"] {
-        if !recording
-            .capabilities
-            .supported
-            .iter()
-            .any(|value| value == required)
-        {
-            return Err(ReplayError::UnsupportedCapability {
-                capability: required.into(),
-                reason: format!("recording does not declare `{required}`"),
-            });
-        }
+    let required = "pureJvm";
+    if !recording
+        .capabilities
+        .supported
+        .iter()
+        .any(|value| value == required)
+    {
+        return Err(ReplayError::UnsupportedCapability {
+            capability: required.into(),
+            reason: format!("recording does not declare `{required}`"),
+        });
     }
     let single_thread = recording
         .capabilities
