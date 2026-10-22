@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "strict": true,
+    "noEmit": true,
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "target": "ES2023",
+    "resolveJsonModule": true,
+    "types": ["node"]
+  },
+  "files": ["scripts/package-vsix.mjs"]
+}
