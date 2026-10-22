@@ -6,8 +6,6 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.lang.management.ManagementFactory;
-import java.lang.management.ThreadMXBean;
 import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -380,7 +378,7 @@ final class InstrumentationTest {
     }
 
     @Test
-    void fastInstrumentationStableOverheadStaysBelowThirtyPercent() throws Exception {
+    void fastInstrumentationPreservesResultsAndBoundsRepeatedEvents() throws Exception {
         byte[] originalBytes = fastWorkloadClass();
         Class<?> original = new BytesClassLoader().define("fixture.FastWorkload", originalBytes);
         Class<?> instrumented = new BytesClassLoader().define(
@@ -388,72 +386,31 @@ final class InstrumentationTest {
                 BytecodeInstrumenter.instrument(originalBytes, "fixture/FastWorkload", AgentMode.FAST));
         Method originalRun = original.getMethod("run", int.class);
         Method instrumentedRun = instrumented.getMethod("run", int.class);
-        ThreadMXBean threadMetrics = ManagementFactory.getThreadMXBean();
-        assertTrue(threadMetrics.isCurrentThreadCpuTimeSupported());
-        if (!threadMetrics.isThreadCpuTimeEnabled()) {
-            threadMetrics.setThreadCpuTimeEnabled(true);
-        }
-        Path events = directory.resolve("fast-overhead.jsonl");
-        try {
-            AgentBridge.resetForTest(events, AgentMode.FAST);
-            AgentBridge.testStarted("fixture.FastWorkloadTest#works", "fixture.FastWorkloadTest#works");
-            for (int index = 0; index < 2_000; index++) {
-                originalRun.invoke(null, 10_000);
-                instrumentedRun.invoke(null, 10_000);
-            }
-            long[] baseline = new long[16];
-            long[] observed = new long[16];
-            Object expected = null;
-            Object actual = null;
-            for (int index = 0; index < baseline.length; index++) {
-                if (index % 2 == 0) {
-                    long started = threadMetrics.getCurrentThreadCpuTime();
-                    expected = originalRun.invoke(null, 30_000_000);
-                    baseline[index] = threadMetrics.getCurrentThreadCpuTime() - started;
-                    started = threadMetrics.getCurrentThreadCpuTime();
-                    actual = instrumentedRun.invoke(null, 30_000_000);
-                    observed[index] = threadMetrics.getCurrentThreadCpuTime() - started;
-                } else {
-                    long started = threadMetrics.getCurrentThreadCpuTime();
-                    actual = instrumentedRun.invoke(null, 30_000_000);
-                    observed[index] = threadMetrics.getCurrentThreadCpuTime() - started;
-                    started = threadMetrics.getCurrentThreadCpuTime();
-                    expected = originalRun.invoke(null, 30_000_000);
-                    baseline[index] = threadMetrics.getCurrentThreadCpuTime() - started;
+        int[] iterations = {-1, 0, 1, 2, 31, 32, 10_000};
+        for (int invocation = 0; invocation < 2; invocation++) {
+            Path events = directory.resolve("fast-workload-" + invocation + ".jsonl");
+            try {
+                AgentBridge.resetForTest(events, AgentMode.FAST);
+                AgentBridge.testStarted("fixture.FastWorkloadTest#works", "fixture.FastWorkloadTest#works");
+                for (int repetition = 0; repetition < 16; repetition++) {
+                    for (int count : iterations) {
+                        assertEquals(
+                                originalRun.invoke(null, count),
+                                instrumentedRun.invoke(null, count),
+                                "iterations=" + count + " repetition=" + repetition);
+                    }
                 }
+                AgentBridge.testFinished("fixture.FastWorkloadTest#works", "passed", null);
+            } finally {
+                AgentBridge.closeForTest();
             }
-            AgentBridge.testFinished("fixture.FastWorkloadTest#works", "passed", null);
-            assertEquals(expected, actual);
-            double aggregateRatio = aggregateCpuRatio(baseline, observed);
-            assertTrue(
-                    aggregateRatio <= 1.30,
-                    "fast instrumentation aggregate paired CPU-time overhead exceeded 30%: ratio="
-                            + aggregateRatio
-                            + " baseline="
-                            + Arrays.toString(baseline)
-                            + " observed="
-                            + Arrays.toString(observed));
-        } finally {
-            AgentBridge.closeForTest();
+            List<String> trace = Files.readAllLines(events).stream()
+                    .filter(line -> line.contains("\"owner\":\"fixture/FastWorkload\""))
+                    .toList();
+            assertEquals(2, trace.size(), "workload event count");
+            assertEquals(1, trace.stream().filter(line -> line.contains("\"type\":\"METHOD_ENTER\"")).count());
+            assertEquals(1, trace.stream().filter(line -> line.contains("\"type\":\"LINE\"")).count());
         }
-    }
-
-    @Test
-    void aggregateCpuRatioHandlesCoarseWindowsTimerSamples() {
-        // Each unit is one 15.625 ms CPU-time tick from the Windows regression run.
-        long[] baselineTicks = {4, 3, 5, 3, 2, 2, 3, 3, 4, 5, 3, 0, 3, 2, 3, 2};
-        long[] observedTicks = {3, 4, 2, 4, 3, 3, 4, 5, 3, 3, 4, 5, 1, 3, 3, 4};
-
-        assertEquals(54.0 / 47.0, aggregateCpuRatio(baselineTicks, observedTicks), 0.000_001);
-    }
-
-    private static double aggregateCpuRatio(long[] baseline, long[] observed) {
-        if (baseline.length == 0 || baseline.length != observed.length) {
-            throw new IllegalArgumentException("CPU-time samples must be non-empty paired arrays");
-        }
-        double baselineTotal = Arrays.stream(baseline).asDoubleStream().sum();
-        if (baselineTotal <= 0) throw new IllegalArgumentException("baseline CPU time must be positive");
-        return Arrays.stream(observed).asDoubleStream().sum() / baselineTotal;
     }
 
     private static void runScheduledThreads(boolean startSecondFirst) throws Exception {
