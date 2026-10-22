@@ -204,7 +204,7 @@ fn selected_test_without_worker_evidence_is_never_reported_as_success() {
 
     assert_eq!(outcome.status, RunStatus::Error);
     assert_eq!(outcome.exit_code, 3);
-    assert!(outcome.tests.is_empty());
+    assert_eq!(outcome.tests, Vec::<String>::new());
 }
 
 #[test]
