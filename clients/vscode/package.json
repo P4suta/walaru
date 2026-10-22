@@ -115,9 +115,13 @@
   "scripts": {
     "test": "node --test test/*.test.js",
     "validate": "node scripts/validate-manifest.mjs",
+    "typecheck:packaging": "tsc --project tsconfig.packaging.json",
+    "prepackage": "npm run typecheck:packaging",
     "package": "node scripts/package-vsix.mjs"
   },
   "devDependencies": {
-    "@vscode/vsce": "4.0.0"
+    "@types/node": "22.20.5",
+    "@vscode/vsce": "4.0.0",
+    "typescript": "7.0.2"
   }
 }

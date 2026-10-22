@@ -2,4 +2,5 @@ test/**
 scripts/**
 node_modules/**
 package-lock.json
+tsconfig.packaging.json
 .vscodeignore
