@@ -25,6 +25,10 @@ trap 'rm -rf "$temporary_root"' EXIT
 tar -xzf "$archive" -C "$temporary_root"
 bundle_root="$temporary_root/${archive_name%.tar.gz}"
 binary="$bundle_root/bin/walaru"
+if [[ ! -s "$bundle_root/NOTICE" ]]; then
+  echo "package is missing NOTICE" >&2
+  exit 2
+fi
 if [[ ! -x "$binary" ]]; then
   echo "package is missing bin/walaru" >&2
   exit 2

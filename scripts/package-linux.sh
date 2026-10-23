@@ -36,6 +36,7 @@ install -Dm644 "gradle-adapter/build/libs/gradle-adapter-${workspace_version}-al
 install -Dm644 gradle/walaru.init.gradle.kts "$bundle_root/share/walaru/walaru.init.gradle.kts"
 install -Dm644 LICENSE-MIT "$bundle_root/LICENSE-MIT"
 install -Dm644 LICENSE-APACHE "$bundle_root/LICENSE-APACHE"
+install -Dm644 NOTICE "$bundle_root/NOTICE"
 install -Dm644 README.md "$bundle_root/README.md"
 cp -R docs "$bundle_root/docs"
 cp -R schemas "$bundle_root/schemas"
