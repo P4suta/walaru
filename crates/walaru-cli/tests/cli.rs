@@ -674,12 +674,7 @@ exit 1
     let build_failure = run(&["explain", "--max-failures", "1"]);
     assert_eq!(build_failure.status.code(), Some(1));
     let envelope: Value = serde_json::from_slice(&build_failure.stdout).unwrap();
-    assert!(
-        envelope["data"]["explanations"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
+    assert_eq!(envelope["data"]["explanations"], serde_json::json!([]));
     assert!(
         envelope["data"]["buildFailure"]["summary"]
             .as_str()
