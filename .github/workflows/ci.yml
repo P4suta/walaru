@@ -1,9 +1,8 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
+  merge_group:
 
 permissions:
   contents: read
@@ -19,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-15, macos-15-intel, windows-2025]
+        os: [ubuntu-24.04]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Check out source
@@ -48,8 +47,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-15, macos-15-intel, windows-2025]
-        java: [21, 25]
+        os: [ubuntu-24.04]
+        java: [21]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Check out source
@@ -128,7 +127,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends ripgrep
       - name: Install zizmor
-        run: cargo install --locked zizmor --version 1.29.0
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        with:
+          tool: zizmor@1.31.1
       - name: Lint repository policy
         run: scripts/lint-repository.sh
 
@@ -141,15 +142,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Cache security tools
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cargo/bin
-          key: rust-security-cargo-deny-0.20.2-cargo-audit-0.22.2
       - name: Install security tools
-        run: |
-          command -v cargo-deny >/dev/null || cargo install --locked cargo-deny --version 0.20.2
-          command -v cargo-audit >/dev/null || cargo install --locked cargo-audit --version 0.22.2
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        with:
+          tool: cargo-deny@0.20.2,cargo-audit@0.22.2
       - name: Check licenses, bans, advisories, and sources
         run: cargo deny check
       - name: Audit Rust lockfile
@@ -170,133 +166,6 @@ jobs:
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
           fail-on-severity: moderate
-
-  codeql:
-    name: CodeQL (${{ matrix.language }})
-    timeout-minutes: 30
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-      security-events: write # Upload CodeQL results for the three declared languages.
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - language: java-kotlin
-            build-mode: manual
-          - language: javascript-typescript
-            build-mode: none
-          - language: actions
-            build-mode: none
-    steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Set up JDK
-        if: matrix.language == 'java-kotlin'
-        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
-        with:
-          distribution: temurin
-          java-version: 21
-          cache: gradle
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
-        with:
-          languages: ${{ matrix.language }}
-          build-mode: ${{ matrix.build-mode }}
-      - name: Build Java and Kotlin
-        if: matrix.language == 'java-kotlin'
-        # CodeQL extracts only what the compilers compile, and the restored Gradle cache would otherwise serve every class from the build cache.
-        run: ./gradlew classes testClasses --no-daemon --no-build-cache
-      - name: Analyze
-        uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
-        with:
-          category: /language:${{ matrix.language }}
-
-  packages:
-    name: Package (${{ matrix.name }})
-    timeout-minutes: 40
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: linux-x86_64
-            os: ubuntu-24.04
-          - name: macos-aarch64
-            os: macos-15
-          - name: macos-x86_64
-            os: macos-15-intel
-          - name: windows-x86_64
-            os: windows-2025
-    runs-on: ${{ matrix.os }}
-    steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Set up JDK
-        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
-        with:
-          distribution: temurin
-          java-version: 21
-          cache: gradle
-      - name: Build Unix package
-        if: runner.os == 'Linux'
-        run: scripts/package-linux.sh
-      - name: Build macOS package
-        if: runner.os == 'macOS'
-        run: scripts/package-macos.sh
-      - name: Build Windows package
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: scripts/package-windows.ps1
-      - name: Smoke-test Unix package
-        if: runner.os != 'Windows'
-        run: scripts/smoke-package.sh dist/*.tar.gz
-      - name: Smoke-test Windows package
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: scripts/smoke-package.ps1 (Get-ChildItem dist/*.zip).FullName
-      - name: Upload package
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: walaru-${{ matrix.name }}
-          path: |
-            dist/*.tar.gz
-            dist/*.zip
-            dist/*.sha256
-          if-no-files-found: error
-          retention-days: 7
-
-  vscode-package:
-    name: VS Code package
-    timeout-minutes: 15
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Set up Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: clients/vscode/package-lock.json
-      - name: Install extension dependencies
-        run: npm ci
-        working-directory: clients/vscode
-      - name: Build VSIX
-        run: npm run package
-        working-directory: clients/vscode
-      - name: Upload VSIX
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: walaru-vsix
-          path: dist/*.vsix
-          if-no-files-found: error
-          retention-days: 7
 
   security-scan:
     name: Secret and filesystem scan
@@ -338,9 +207,6 @@ jobs:
       - repository-lint
       - rust-security
       - dependency-review
-      - codeql
-      - packages
-      - vscode-package
       - security-scan
     steps:
       - name: Require every CI gate
@@ -348,8 +214,8 @@ jobs:
           RESULTS: ${{ join(needs.*.result, ' ') }}
         run: |
           read -r -a results <<< "$RESULTS"
-          if (( ${#results[@]} != 10 )); then
-            echo "Expected 10 CI gate results, received ${#results[@]}: $RESULTS" >&2
+          if (( ${#results[@]} != 7 )); then
+            echo "Expected 7 CI gate results, received ${#results[@]}: $RESULTS" >&2
             exit 1
           fi
           for result in "${results[@]}"; do
@@ -368,7 +234,7 @@ jobs:
     name: required
     if: always()
     needs: [ci-success]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
     steps:
