@@ -24,9 +24,104 @@ jobs:
       - name: Validate versions
         run: scripts/check-release-version.sh "$GITHUB_REF_NAME"
 
+  rust:
+    name: Rust (${{ matrix.os }})
+    needs: validate
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, macos-15-intel, windows-2025]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check formatting
+        if: runner.os == 'Linux'
+        run: cargo fmt --all -- --check
+      - name: Run Rust tests
+        run: cargo test --workspace
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  jvm:
+    name: JVM (${{ matrix.os }}, JDK ${{ matrix.java }})
+    needs: validate
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, macos-15-intel, windows-2025]
+        java: [21, 25]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up JDK
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+      - name: Check JVM projects
+        if: runner.os != 'Windows'
+        run: >-
+          ./gradlew check :jvm-api:javadoc :jvm-client:javadoc :jvm-testkit:javadoc
+          generatePomFileForLibraryPublication --no-daemon
+      - name: Check JVM projects on Windows
+        if: runner.os == 'Windows'
+        run: >-
+          ./gradlew.bat check :jvm-api:javadoc :jvm-client:javadoc :jvm-testkit:javadoc
+          generatePomFileForLibraryPublication --no-daemon
+
+  codeql:
+    name: CodeQL (${{ matrix.language }})
+    needs: validate
+    timeout-minutes: 30
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      security-events: write # Upload CodeQL results for the three declared languages.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: java-kotlin
+            build-mode: manual
+          - language: javascript-typescript
+            build-mode: none
+          - language: actions
+            build-mode: none
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up JDK
+        if: matrix.language == 'java-kotlin'
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: 21
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+      - name: Build Java and Kotlin
+        if: matrix.language == 'java-kotlin'
+        run: ./gradlew classes testClasses --no-daemon --no-build-cache
+      - name: Analyze
+        uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          category: /language:${{ matrix.language }}
+
   packages:
     name: Release package (${{ matrix.name }})
-    needs: validate
+    needs: [validate, rust, jvm, codeql]
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -81,7 +176,7 @@ jobs:
 
   vscode:
     name: Release VSIX
-    needs: validate
+    needs: [validate, rust, jvm, codeql]
     timeout-minutes: 15
     runs-on: ubuntu-24.04
     steps:
@@ -90,13 +185,21 @@ jobs:
         with:
           persist-credentials: false
       - name: Set up Node.js
-        # zizmor: ignore[cache-poisoning]
-        # npm verifies every package against the immutable package-lock integrity digest.
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
+          package-manager-cache: false
       - name: Install extension dependencies
         run: npm ci
+        working-directory: clients/vscode
+      - name: Test extension models and client
+        run: npm test
+        working-directory: clients/vscode
+      - name: Validate extension manifest
+        run: npm run validate
+        working-directory: clients/vscode
+      - name: Audit npm dependencies
+        run: npm audit --audit-level=high
         working-directory: clients/vscode
       - name: Build VSIX
         run: npm run package

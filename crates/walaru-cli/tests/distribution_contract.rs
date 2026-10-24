@@ -72,8 +72,30 @@ fn repository_documents_and_packages_the_supported_contract() {
     assert!(contributing.contains("PowerShell 7"));
 
     let workflow = fs::read_to_string(root.join(".github/workflows/ci.yml")).unwrap();
-    for required in ["ubuntu-24.04", "macos-15", "windows-2025", "21", "25"] {
+    for required in [
+        "ubuntu-24.04",
+        "merge_group:",
+        "cargo test --workspace",
+        "./gradlew check",
+        "npm audit --audit-level=high",
+    ] {
         assert!(workflow.contains(required), "CI is missing `{required}`");
+    }
+    let release = fs::read_to_string(root.join(".github/workflows/release.yml")).unwrap();
+    for required in [
+        "ubuntu-24.04",
+        "macos-15",
+        "macos-15-intel",
+        "windows-2025",
+        "java: [21, 25]",
+        "needs: [validate, rust, jvm, codeql]",
+        "scripts/smoke-package.sh",
+        "scripts/smoke-package.ps1",
+    ] {
+        assert!(
+            release.contains(required),
+            "release is missing `{required}`"
+        );
     }
     let wrapper_validation = workflow
         .lines()

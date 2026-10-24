@@ -1,10 +1,12 @@
-# Contributing to Walaru
+# Contributing
 
-Thank you for helping build Walaru. Public communication, code, tests, and documentation are in English.
+Public communication, code, tests, and documentation are in English.
 
 ## Development setup
 
-Install Rust 1.97, JDK 21+, Node.js 22+, and a POSIX shell on Linux/macOS (PowerShell 7 is required for Windows packaging). Then run:
+Install the Rust toolchain pinned in `rust-toolchain.toml`, Java Development Kit (JDK) 21+, Node.js 22+, and a POSIX shell on Linux/macOS.
+Windows packaging requires PowerShell 7.
+Run the project checks:
 
 ```bash
 export GRADLE_USER_HOME="$PWD/.gradle-user-home"
@@ -22,30 +24,46 @@ npm --prefix clients/vscode test
 npm --prefix clients/vscode run validate
 ```
 
-Generated outputs, local databases, `dist/`, and caches stay in place locally but must not be committed.
+Keep generated outputs, local databases, `dist/`, and caches out of commits.
 
 ## Test-first contract
 
-Start each behavior change with the smallest executable test that fails for the intended reason. Implement the behavior, keep the focused test green, then run the relevant broad gate. A regression found by a broad gate receives a focused test before its fix.
+Start each behavior change with the smallest executable test that fails for the intended reason.
+Add the behavior, keep the focused test green, then run the relevant broad gate.
+A regression found by a broad gate receives a focused test before its fix.
 
 Important contract areas are:
 
 - JSON schema, protobuf round trips, IDs, exit codes, pagination, and response bounds.
-- SQLite WAL recovery, retention, impact widening, coverage, failures, and traces.
-- ASM instrumentation, hostile values, redaction, Kotlin source maps, coroutines, TestNG, Gradle, and Maven.
-- Zero-dependency API no-agent behavior, explicit captures, async context restoration, generated
-  reports, ServiceLoader discovery, typed client argv, and publication metadata.
-- Deterministic inputs, scheduling, fresh-JVM replay, reverse targets, and capability failures.
-- TUI state/input/rendering and VS Code multi-root/trust/argv/size behavior.
+- SQLite write-ahead log recovery, retention, impact widening, coverage, failures, and traces.
+- `ASM` instrumentation, hostile values, redaction, Kotlin source maps, coroutines, TestNG, Gradle, and Maven.
+- Zero-dependency API no-agent behavior, explicit captures, async context restoration, generated reports, ServiceLoader discovery, typed client argv, and publication metadata.
+- Deterministic inputs, scheduling, fresh Java Virtual Machine (JVM) replay, reverse targets, and capability failures.
+- Terminal user interface state/input/rendering and VS Code multi-root/trust/argv/size behavior.
 - Cross-platform packages, checksums, `doctor`, and repository security policy.
 
-Performance tests use warmed distributions, not a single timing. Capability or stale failures are semantic results, never benchmark successes.
+Performance tests use warmed distributions, not a single timing.
+Capability or stale failures are semantic results, never benchmark successes.
+
+## CI and release checks
+
+Pull requests and merge groups run Rust and JDK 21 checks on Linux, extension tests, repository lint, dependency checks, and secret and filesystem scans.
+The `ci-success` gate requires every ordinary check to succeed, and branch protection requires the `required` summary.
+Merges into `main` skip duplicate ordinary CI.
+
+Release tags run Rust checks on all four supported operating-system targets, JVM checks on JDK 21 and 25 across those targets, and CodeQL analysis.
+Package builds and smoke tests wait for those checks.
+The extension passes its tests, manifest validation, and dependency audit before packaging.
+Publication waits for both package jobs.
+Scorecard runs weekly and when branch protection changes to check repository settings and external security signals.
 
 ## Changes and pull requests
 
-- Keep public machine formats backward compatible within schema version `1`; additive nullable fields are preferred.
-- Do not weaken bounds, redaction, conservative selection, or replay honesty.
-- Use Conventional Commit subjects. The repository accepts squash merge only.
+- Keep public machine formats backward compatible within schema version `1`.
+  Prefer additive nullable fields.
+- Don't weaken bounds, redaction, conservative selection, or replay honesty.
+- Use Conventional Commit subjects.
+  The repository accepts squash merge only.
 - Update documentation and fixtures with behavior changes.
 - Confirm `scripts/check.sh` and applicable security checks before opening a pull request.
 - Keep pull requests focused and complete the template.
