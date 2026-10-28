@@ -1,0 +1,26 @@
+name = "Walaru"
+summary = "An unreleased tool for local failure analysis and replay of Java and Kotlin tests"
+install = """
+# Requires JDK 21 or later.
+git clone https://github.com/P4suta/walaru.git
+cd walaru
+"""
+usage_language = "sh"
+usage = '''
+# The zero-dependency API is fail-open without the test agent.
+# CLI explain produces local analysis even when tests fail.
+# Replay reports verified: true after a fresh-JVM match through the requested event.
+cd examples/java-library-first
+../../gradlew walaruExplain # Expected test failure; writes build/reports/walaru/index.html.
+'''
+documentation_index = true
+copyright = "2026 Walaru contributors"
+license = "MIT OR Apache-2.0"
+
+[preserved_licenses]
+mit_sha256 = "b0300ea1545ffbfafc725bdaa7425ada1791dd73e7422b44be3454944831f16d"
+apache_sha256 = "dc9b1a6cfb5e509a03cb4f130011f877a529fd0f204bde0047d027e9969cc8a6"
+
+[[consent]]
+contributor = "Yasunobu"
+evidence = "https://github.com/P4suta/walaru/commit/7660d0233161eebc5c4369b5776c8d3c442def00"
