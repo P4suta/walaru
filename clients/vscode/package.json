@@ -119,6 +119,11 @@
     "prepackage": "npm run typecheck:packaging",
     "package": "node scripts/package-vsix.mjs"
   },
+  "overrides": {
+    "@azure/identity": {
+      "@azure/msal-node": "7.1.2"
+    }
+  },
   "devDependencies": {
     "@types/node": "22.20.5",
     "@vscode/vsce": "4.0.0",
