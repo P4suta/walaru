@@ -2,10 +2,9 @@ name: OpenSSF Scorecard
 
 on:
   branch_protection_rule:
+  # Repository settings and external security signals can change without a source commit.
   schedule:
     - cron: "17 3 * * 1"
-  push:
-    branches: [main]
 
 permissions:
   contents: read
