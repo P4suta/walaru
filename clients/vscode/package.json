@@ -121,7 +121,7 @@
   },
   "overrides": {
     "@azure/identity": {
-      "@azure/msal-node": "7.1.2"
+      "@azure/msal-node": "7.2.1"
     }
   },
   "devDependencies": {
