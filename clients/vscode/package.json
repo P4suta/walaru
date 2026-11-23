@@ -121,12 +121,12 @@
   },
   "overrides": {
     "@azure/identity": {
-      "@azure/msal-node": "7.1.2"
+      "@azure/msal-node": "7.2.3"
     }
   },
   "devDependencies": {
     "@types/node": "26.6.6",
-    "@vscode/vsce": "4.1.0",
+    "@vscode/vsce": "4.1.1",
     "typescript": "7.0.2"
   }
 }
