@@ -9,6 +9,7 @@ ignore = []
 [licenses]
 version = 2
 confidence-threshold = 0.93
+exceptions = [{ crate = "zstd-sys@=2.1.3", allow = ["BSD-2-Clause"] }]
 allow = [
   "Apache-2.0",
   "BSD-3-Clause",

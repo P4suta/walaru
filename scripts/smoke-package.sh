@@ -25,8 +25,8 @@ trap 'rm -rf "$temporary_root"' EXIT
 tar -xzf "$archive" -C "$temporary_root"
 bundle_root="$temporary_root/${archive_name%.tar.gz}"
 binary="$bundle_root/bin/walaru"
-if [[ ! -s "$bundle_root/NOTICE" ]]; then
-  echo "package is missing NOTICE" >&2
+if ! cmp -s "${bundle_root}/NOTICE" "$(dirname "${BASH_SOURCE[0]}")/../NOTICE"; then
+  echo "package NOTICE differs from the release source" >&2
   exit 2
 fi
 if [[ ! -x "$binary" ]]; then

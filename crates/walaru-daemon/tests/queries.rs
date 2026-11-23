@@ -2,11 +2,11 @@
 
 use std::collections::BTreeMap;
 
-use chrono::Utc;
 use serde_json::{Value, json};
 use tempfile::tempdir;
 use walaru_core::protocol::{CapabilityManifest, Completeness, Envelope, RpcRequest};
 use walaru_core::replay::{Event, EventKind, Recording};
+use walaru_core::store::RunTimestamp;
 use walaru_core::store::{FailureRecord, NewRun, TestRecord};
 use walaru_daemon::Daemon;
 
@@ -20,7 +20,7 @@ fn tests_values_and_reverse_are_returned_through_the_fixed_envelope() {
             id: "run-1".into(),
             revision: "rev-a".into(),
             source_digest: "digest-a".into(),
-            started_at: Utc::now(),
+            started_at: RunTimestamp::now(),
         })
         .unwrap();
     daemon
@@ -194,7 +194,7 @@ fn oversized_single_event_never_breaks_the_default_json_response_bound() {
             id: "run-large".into(),
             revision: "rev-a".into(),
             source_digest: "digest-a".into(),
-            started_at: Utc::now(),
+            started_at: RunTimestamp::now(),
         })
         .unwrap();
     let mut oversized = event("evt-large", 1, EventKind::Line);
@@ -229,7 +229,7 @@ fn trace_field_projection_is_paged_by_the_projected_size() {
             id: "run-projected".into(),
             revision: "rev-a".into(),
             source_digest: "digest-a".into(),
-            started_at: Utc::now(),
+            started_at: RunTimestamp::now(),
         })
         .unwrap();
     for sequence in 1..=3 {

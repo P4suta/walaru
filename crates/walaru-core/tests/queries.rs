@@ -1,9 +1,9 @@
 //! Query model and pagination contract for AI clients.
 
-use chrono::Utc;
 use serde_json::json;
 use tempfile::tempdir;
 use walaru_core::replay::{Event, EventKind, SourceLocation};
+use walaru_core::store::RunTimestamp;
 use walaru_core::store::{
     CoverageRecord, FailureRecord, NewRun, RetentionPolicy, RunStatus, Store, TestRecord,
 };
@@ -21,7 +21,7 @@ fn tests_failures_coverage_trace_and_values_are_structured_and_bounded() {
             id: "run-queries".into(),
             revision: "rev-query".into(),
             source_digest: "digest-query".into(),
-            started_at: Utc::now(),
+            started_at: RunTimestamp::now(),
         })
         .unwrap();
     for (id, status) in [
@@ -148,7 +148,12 @@ fn tests_failures_coverage_trace_and_values_are_structured_and_bounded() {
     );
 
     store
-        .finish_run("run-queries", RunStatus::Passed, "rev-query", Utc::now())
+        .finish_run(
+            "run-queries",
+            RunStatus::Passed,
+            "rev-query",
+            RunTimestamp::now(),
+        )
         .unwrap();
     assert_eq!(
         store.latest_passed_revision().unwrap().as_deref(),
