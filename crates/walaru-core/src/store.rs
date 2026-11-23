@@ -4,10 +4,11 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
-use chrono::{DateTime, Duration, Utc};
+pub use crate::timestamp::RunTimestamp;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use time::SignedDuration as Duration;
 
 use crate::replay::{Event, Recording};
 
@@ -156,7 +157,7 @@ pub struct NewRun {
     /// Digest of source/resource/build input bytes.
     pub source_digest: String,
     /// Start time.
-    pub started_at: DateTime<Utc>,
+    pub started_at: RunTimestamp,
 }
 
 /// Persisted run state.
@@ -214,9 +215,9 @@ pub struct RunRecord {
     /// Terminal or active state.
     pub status: RunStatus,
     /// Start time.
-    pub started_at: DateTime<Utc>,
+    pub started_at: RunTimestamp,
     /// Completion time.
-    pub finished_at: Option<DateTime<Utc>>,
+    pub finished_at: Option<RunTimestamp>,
 }
 
 /// Discovered test metadata.
@@ -354,7 +355,7 @@ impl Store {
             "UPDATE runs SET status = ?1, finished_at = COALESCE(finished_at, ?2) WHERE status = ?3",
             params![
                 RunStatus::Error.as_db(),
-                Utc::now().to_rfc3339(),
+                RunTimestamp::now().to_string(),
                 RunStatus::Running.as_db(),
             ],
         )?;
@@ -381,7 +382,7 @@ impl Store {
                 run.revision,
                 run.source_digest,
                 RunStatus::Running.as_db(),
-                run.started_at.to_rfc3339(),
+                run.started_at.to_string(),
             ],
         )?;
         Ok(())
@@ -393,7 +394,7 @@ impl Store {
         run_id: &str,
         desired: RunStatus,
         current_revision: &str,
-        finished_at: DateTime<Utc>,
+        finished_at: RunTimestamp,
     ) -> Result<RunStatus, StoreError> {
         let connection = self.connection()?;
         let starting_revision: String =
@@ -407,7 +408,7 @@ impl Store {
         };
         connection.execute(
             "UPDATE runs SET status = ?2, finished_at = ?3 WHERE id = ?1",
-            params![run_id, actual.as_db(), finished_at.to_rfc3339()],
+            params![run_id, actual.as_db(), finished_at.to_string()],
         )?;
         Ok(actual)
     }
@@ -811,7 +812,12 @@ impl Store {
         self.connection()?.execute(
             "INSERT OR REPLACE INTO verification_cache(revision, run_id, created_at, payload_zstd)
              VALUES (?1, ?2, ?3, ?4)",
-            params![revision, run_id, Utc::now().to_rfc3339(), compressed],
+            params![
+                revision,
+                run_id,
+                RunTimestamp::now().to_string(),
+                compressed
+            ],
         )?;
         Ok(())
     }
@@ -854,7 +860,7 @@ impl Store {
         self.connection()?.execute(
             "INSERT OR REPLACE INTO revision_manifests(revision, created_at, payload_zstd)
              VALUES (?1, ?2, ?3)",
-            params![revision, Utc::now().to_rfc3339(), compressed],
+            params![revision, RunTimestamp::now().to_string(), compressed],
         )?;
         Ok(())
     }
@@ -937,7 +943,7 @@ impl Store {
                 recording.revision,
                 recording.test_id,
                 recording.backend,
-                Utc::now().to_rfc3339(),
+                RunTimestamp::now().to_string(),
                 compressed,
             ],
         )?;
@@ -963,20 +969,20 @@ impl Store {
     }
 
     /// Applies age and compressed-size retention bounds.
-    pub fn prune(&self, now: DateTime<Utc>) -> Result<PruneResult, StoreError> {
+    pub fn prune(&self, now: RunTimestamp) -> Result<PruneResult, StoreError> {
         let cutoff = now - self.retention.max_age;
         let connection = self.connection()?;
         let runs_removed = connection.execute(
             "DELETE FROM runs WHERE started_at < ?1",
-            [cutoff.to_rfc3339()],
+            [cutoff.to_string()],
         )?;
         let mut recordings_removed = connection.execute(
             "DELETE FROM recordings WHERE created_at < ?1",
-            [cutoff.to_rfc3339()],
+            [cutoff.to_string()],
         )?;
         connection.execute(
             "DELETE FROM revision_manifests WHERE created_at < ?1",
-            [cutoff.to_rfc3339()],
+            [cutoff.to_string()],
         )?;
 
         let mut removed_for_size = 0;
@@ -1042,9 +1048,9 @@ fn payload_bytes(connection: &Connection) -> Result<u64, rusqlite::Error> {
         .map(|value| u64::try_from(value).unwrap_or(u64::MAX))
 }
 
-fn parse_timestamp(value: &str) -> Result<DateTime<Utc>, StoreError> {
-    DateTime::parse_from_rfc3339(value)
-        .map(|value| value.with_timezone(&Utc))
+fn parse_timestamp(value: &str) -> Result<RunTimestamp, StoreError> {
+    value
+        .parse()
         .map_err(|_| StoreError::InvalidTimestamp(value.into()))
 }
 

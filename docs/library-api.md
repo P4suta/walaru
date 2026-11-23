@@ -151,3 +151,10 @@ pagination, event targets, and response size.
 The client covers status, doctor, tests, failure analysis, verify, one-command explain, impact,
 coverage, trace, values, record, replay, reverse, and stop. Captured user values stay as Jackson
 `JsonNode` because their shape is intentionally open; the surrounding protocol is strongly typed.
+
+## Rust run timestamps
+
+`walaru_core::store::NewRun` and `RunRecord` expose `RunTimestamp` for run start and finish times.
+Use `RunTimestamp::now()` for the current instant, convert a `time::UtcDateTime` with `.into()`, or parse an RFC 3339 string with `.parse::<RunTimestamp>()`.
+Set `RetentionPolicy::max_age` with `time::SignedDuration`, for example `time::SignedDuration::days(7)`.
+Existing SQLite timestamps keep their UTC offset, fractional precision, and leap seconds.

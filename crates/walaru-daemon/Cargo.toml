@@ -9,7 +9,6 @@ repository.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-chrono.workspace = true
 hex.workspace = true
 prost.workspace = true
 serde.workspace = true

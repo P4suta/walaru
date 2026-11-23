@@ -8,7 +8,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use chrono::Utc;
 #[cfg(unix)]
 use nix::sys::signal::{Signal, killpg};
 #[cfg(unix)]
@@ -25,6 +24,7 @@ use walaru_core::replay::{
     Event, EventKind, LogicalFrame, RecordedInput, Recording, ReplayCheckpoint, ReplayError,
     SourceLocation, verify_replayed_prefix,
 };
+use walaru_core::store::RunTimestamp;
 use walaru_core::store::{
     CoverageRecord, Dependency, FailureRecord, ImpactSelection, NewRun, RevisionManifest,
     RunStatus, Store, StoreError, TestRecord,
@@ -469,7 +469,7 @@ impl<'a> Verifier<'a> {
             id: run_id.clone(),
             revision: before.revision.to_string(),
             source_digest: before.revision.to_string(),
-            started_at: Utc::now(),
+            started_at: RunTimestamp::now(),
         })?;
 
         let worker_files = WorkerFiles {
@@ -488,7 +488,7 @@ impl<'a> Verifier<'a> {
                     &run_id,
                     RunStatus::Error,
                     before.revision.as_str(),
-                    Utc::now(),
+                    RunTimestamp::now(),
                 );
                 return Err(error);
             }
@@ -498,7 +498,7 @@ impl<'a> Verifier<'a> {
                 &run_id,
                 RunStatus::Error,
                 before.revision.as_str(),
-                Utc::now(),
+                RunTimestamp::now(),
             );
             return Err(error);
         }
@@ -509,7 +509,7 @@ impl<'a> Verifier<'a> {
                 &run_id,
                 RunStatus::Error,
                 before.revision.as_str(),
-                Utc::now(),
+                RunTimestamp::now(),
             );
             return Err(error.into());
         }
@@ -520,7 +520,7 @@ impl<'a> Verifier<'a> {
                     &run_id,
                     RunStatus::Error,
                     before.revision.as_str(),
-                    Utc::now(),
+                    RunTimestamp::now(),
                 );
                 return Err(error);
             }
@@ -532,7 +532,7 @@ impl<'a> Verifier<'a> {
                     &run_id,
                     RunStatus::Error,
                     before.revision.as_str(),
-                    Utc::now(),
+                    RunTimestamp::now(),
                 );
                 return Err(error.into());
             }
@@ -553,9 +553,12 @@ impl<'a> Verifier<'a> {
         } else {
             RunStatus::Failed
         };
-        let status =
-            self.store
-                .finish_run(&run_id, desired, after.revision.as_str(), Utc::now())?;
+        let status = self.store.finish_run(
+            &run_id,
+            desired,
+            after.revision.as_str(),
+            RunTimestamp::now(),
+        )?;
         let exit_code = match status {
             RunStatus::Passed => 0,
             RunStatus::Failed => 1,
@@ -597,7 +600,7 @@ impl<'a> Verifier<'a> {
                 },
             )?;
         }
-        self.store.prune(Utc::now())?;
+        self.store.prune(RunTimestamp::now())?;
         Ok(outcome)
     }
 
@@ -804,7 +807,7 @@ impl<'a> Verifier<'a> {
             checkpoints,
         };
         self.store.save_recording(&recording)?;
-        self.store.prune(Utc::now())?;
+        self.store.prune(RunTimestamp::now())?;
         Ok(recording)
     }
 

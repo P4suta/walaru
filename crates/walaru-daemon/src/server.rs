@@ -95,7 +95,7 @@ impl Daemon {
         let layout = WorkspaceLayout::new(workspace)?;
         layout.ensure_state_dir()?;
         let store = Store::open(&layout.database, RetentionPolicy::default())?;
-        store.prune(chrono::Utc::now())?;
+        store.prune(walaru_core::store::RunTimestamp::now())?;
         Ok(Self {
             layout,
             store,
